@@ -30,14 +30,9 @@ examples/ETO_KTO/
 data/2016-05_efficientFitProgram/
 flake8_autofix/
 examples/dev.ipynb
-
-examples/dev.ipynb
 data/SRO-CTO/
 examples/superlattice_adf.h5
 examples/crystal_analyzer.ipynb
 examples/CTO-SRO.ipynb
-data/SRO-CTO/
-data/
-.env
 data/ETO_KTO/
 data/STO/
