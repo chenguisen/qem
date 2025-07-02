@@ -34,6 +34,7 @@ from qem.model import (
     VoigtModel,
     GaussianKernel,
 )
+from qem.processing import butterworth_window
 from qem.refine import calculate_center_of_mass
 from qem.utils import get_random_indices_in_batches, remove_close_coordinates
 from qem.voronoi import voronoi_integrate, calculate_point_record, fast_voronoi_point_record
@@ -88,7 +89,7 @@ class ImageModelFitting:
         """
         if elements is None:
             elements = ["Sr", "Ti", "O"]
-            
+
         # Store instance variables
         self.image = image
         self.dx = dx
@@ -99,7 +100,7 @@ class ImageModelFitting:
         self.pbc = pbc
         self.fit_background = fit_background
         self.gpu_memory_limit = gpu_memory_limit
-        
+
         # Create model instance based on type
         try:
             if model_type.lower() == "gaussian":
@@ -113,15 +114,25 @@ class ImageModelFitting:
         except Exception as e:
             logging.error(f"Failed to initialize model with {backend} backend: {str(e)}")
             raise
-        
+
         # Create Gaussian kernel for filtering
         self.kernel = GaussianKernel(backend=self.model.backend)
-        
+
         # Get backend modules from model
         self.backend = self.model.backend
         self.K = self.model.K
         self.ops = self.model.ops
-        
+
+        # Initialize missing attributes
+        self.fit_local = False
+        self.local_shape = image.shape
+        self._atom_types = np.array([])
+        self._coordinates = np.array([])
+        self.atoms_selected = np.array([])
+        self.coordinates_history = dict()
+        self.coordinates_state = 0
+        self.init_background = 0.0
+
         # Initialize other attributes
         self.params = {}
         self.converged = False
@@ -160,49 +171,57 @@ class ImageModelFitting:
             Y = self.Y
 
         # Validate parameters
-        required_params = ["pos_x", "pos_y", "height"]
+        required_params = ["pos_x", "pos_y", "height", "width"]
         if not all(k in params for k in required_params):
             raise ValueError(f"Missing required parameters in params dict: {required_params}")
 
-        # Get parameters
+        # Get parameters and convert to backend tensors
         pos_x = self.ops.convert_to_tensor(params["pos_x"], dtype='float32')
         pos_y = self.ops.convert_to_tensor(params["pos_y"], dtype='float32')
         height = self.ops.convert_to_tensor(params["height"], dtype='float32')
-        width = params["width"]
+        width = self.ops.convert_to_tensor(params["width"], dtype='float32')
         
         # Handle same width for different atom types
-        if self.same_width:
-            if "width" in params:
-                width = width[self.atom_types]
-            if "ratio" in params and isinstance(self.model, VoigtModel):
-                params["ratio"] = params["ratio"][self.atom_types]
+        if self.same_width and hasattr(self, 'atom_types') and len(self.atom_types) > 0:
+            if len(width.shape) > 0 and len(width) == len(np.unique(self.atom_types)):
+                width = self.ops.take(width, self.atom_types)
         
         # Update background in model
         background = params.get("background", 0.0)
         self.model.background = background
 
-        # Prepare model arguments
-        model_args = [width]
+        # Prepare model arguments based on model type
         if isinstance(self.model, VoigtModel):
-            model_args.append(params["ratio"])
-        
-        if use_numba:
-            # Use numba version for faster CPU computation
-            prediction = self.model.sum_numba(X, Y, pos_x, pos_y, height, *model_args)
+            ratio = self.ops.convert_to_tensor(params.get("ratio", 0.9), dtype='float32')
+            if self.same_width and hasattr(self, 'atom_types') and len(self.atom_types) > 0:
+                if len(ratio.shape) > 0 and len(ratio) == len(np.unique(self.atom_types)):
+                    ratio = self.ops.take(ratio, self.atom_types)
+            prediction = self.model.sum(X, Y, pos_x, pos_y, height, width, ratio, local=self.gpu_memory_limit)
         else:
-            # Use the model's sum method with appropriate backend
-            prediction = self.model.sum(X, Y, pos_x, pos_y, height, *model_args)
+            prediction = self.model.sum(X, Y, pos_x, pos_y, height, width, local=self.gpu_memory_limit)
             
-            # Handle periodic boundary conditions
-            if self.pbc:
-                for i, j in [(1, 0), (0, 1), (-1, 0), (0, -1), 
-                            (1, 1), (-1, -1), (1, -1), (-1, 1)]:
+        # Handle periodic boundary conditions
+        if self.pbc:
+            for i, j in [(1, 0), (0, 1), (-1, 0), (0, -1), 
+                        (1, 1), (-1, -1), (1, -1), (-1, 1)]:
+                if isinstance(self.model, VoigtModel):
                     prediction += self.model.sum(
                         X, Y,
                         pos_x + i * self.nx,
                         pos_y + j * self.ny,
                         height,
-                        *model_args
+                        width,
+                        ratio,
+                        local=self.gpu_memory_limit
+                    )
+                else:
+                    prediction += self.model.sum(
+                        X, Y,
+                        pos_x + i * self.nx,
+                        pos_y + j * self.ny,
+                        height,
+                        width,
+                        local=self.gpu_memory_limit
                     )
 
         return prediction
@@ -237,7 +256,7 @@ class ImageModelFitting:
 
         # Update the model's pixel size
         self.model.dx = self.dx
-        
+
         # Create parameters dict for volume calculation
         params = self.params.copy()
         if self.same_width:
@@ -246,7 +265,7 @@ class ImageModelFitting:
                 params["width"] = params["width"]
             if "ratio" in params:
                 params["ratio"] = params["ratio"]
-                
+
         return self.model.volume(params)
 
     @property
@@ -406,7 +425,7 @@ class ImageModelFitting:
 
         # Set background in model
         self.model.background = init_background
-        
+
         # Initialize heights from image values
         height = (
             self.image[pos_y.astype(int), pos_x.astype(int)].ravel() - init_background
@@ -428,7 +447,7 @@ class ImageModelFitting:
 
         # Add model-specific parameters
         params["width"] = width
-            
+
         if isinstance(self.model, VoigtModel):
             if self.same_width:
                 ratio = np.tile(0.9, 1).astype(float)
@@ -1589,13 +1608,13 @@ class ImageModelFitting:
             elif key == "pos_y":
                 params[key] = self.ops.clip(value, 0, self.ny - 1)
             elif key == "height":
-                params[key] = jnp.clip(value, 0, np.sum(self.image))
+                params[key] = self.ops.clip(value, 0, np.sum(self.image))
             elif key == "width":
                 params[key] = self.ops.clip(value, 1, min(self.nx, self.ny) / 2)
             elif key == "ratio":
                 params[key] = self.ops.clip(value, 0, 1)
             elif key == "background":
-                params[key] = jnp.clip(value, 0, np.max(self.image))
+                params[key] = self.ops.clip(value, 0, np.max(self.image))
         return params
 
     def update_coordinates(self):
@@ -1957,4 +1976,4 @@ class ImageModelFitting:
 
     @property
     def num_atom_types(self):
-        return len(np.unique(self.atom_types))
+        return len(np.unique(self._atom_types)) if len(self._atom_types) > 0 else 0
