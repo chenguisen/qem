@@ -57,10 +57,7 @@ class ImageModelFitting:
         same_width: bool = True,
         pbc: bool = False,
         fit_background: bool = True,
-        gpu_memory_limit: bool = False,
-        backend: str = "jax"
-        gpu_memory_limit: bool = False,
-        backend: str = "jax"
+        gpu_memory_limit: bool = True,
     ):
         """
         Initialize the Fitting class.
@@ -1041,7 +1038,6 @@ class ImageModelFitting:
             fun=objective_fn,
             x0=params_flat,  # type: ignore
             args=(param_shapes, param_keys, self.image, np.arange(self.nx), np.arange(self.ny)),
-            args=(param_shapes, param_keys, self.image, np.arange(self.nx), np.arange(self.ny)),
             method=method,
             tol=tol,
         )
@@ -1071,7 +1067,6 @@ class ImageModelFitting:
             params = self.params if self.params is not None else self.init_params()
         self.fit_local = False
         params = self.optimize(
-            self.image, params, np.arange(self.nx), np.arange(self.ny), maxiter, tol, step_size, verbose
             self.image, params, np.arange(self.nx), np.arange(self.ny), maxiter, tol, step_size, verbose
         )
         # params = self.same_width_on_atom_type(params)
