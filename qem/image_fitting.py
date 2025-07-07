@@ -13,7 +13,6 @@ from jax import numpy as jnp
 from jax import value_and_grad
 from jax.example_libraries import optimizers
 from jax.scipy.optimize import minimize
-from jaxlib.xla_extension import XlaRuntimeError
 from jaxopt import OptaxSolver
 from matplotlib.path import Path
 from matplotlib_scalebar.scalebar import ScaleBar
@@ -1071,7 +1070,7 @@ class ImageModelFitting:
             height_scale = solution[:-1]
         else:
             height_scale = solution
-        if np.NaN in height_scale:
+        if np.nan in height_scale:
             logging.warning(
                 "The height_scale has NaN, the linear estimator is not valid, parameters are not updated"
             )
@@ -1275,10 +1274,10 @@ class ImageModelFitting:
                         global_prediction = self.predict(params, X, Y)
                         local_prediction = self.predict(select_params, X, Y)
                     else:
-                        raise XlaRuntimeError(
+                        raise Exception(
                             "GPU memory limit exceeded, using the fallback of local prediction."
                         )  # Explicitly raise an exception to use the fallback
-                except XlaRuntimeError:
+                except Exception:
                     self.gpu_memory_limit = True
                     global_prediction = self.predict(params, X, Y)
                     local_prediction = self.predict(select_params, X, Y)
