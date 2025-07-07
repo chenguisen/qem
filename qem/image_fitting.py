@@ -58,6 +58,7 @@ class ImageModelFitting:
         pbc: bool = False,
         fit_background: bool = True,
         gpu_memory_limit: bool = True,
+        backend: str = "jax",
     ):
         """
         Initialize the Fitting class.
@@ -85,7 +86,7 @@ class ImageModelFitting:
             backend (str, optional): Backend to use ('tensorflow', 'pytorch', or 'jax'). Defaults to "jax".
         """
         if elements is None:
-            elements = ["Sr", "Ti", "O"]
+            elements = ["A", "B", "C"]
 
         # Store instance variables
         self.image = image

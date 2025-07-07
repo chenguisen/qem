@@ -121,7 +121,7 @@ class ImageModel(ABC):
             return self.ops.sum(peaks, axis=-1) + self.background
         else:
             # Local calculation with parallel processing
-            width_max = width.max() if isinstance(width, (list, tuple, np.ndarray)) else width            
+            width_max = np.max(width) 
             # Window size in pixels
             window_size = int(5 * width_max)  # Fixed window size of 5*width in grid units
             if window_size % 2 == 0:
