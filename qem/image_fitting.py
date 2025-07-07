@@ -738,8 +738,6 @@ class ImageModelFitting:
             prediction = lorentzian_sum_parallel(
                 X, Y, pos_x, pos_y, height, gamma, background
             )
-        else:
-            raise ValueError("The model type is not valid.")
 
         if self.pbc:
             if self.gpu_memory_limit:
@@ -783,8 +781,7 @@ class ImageModelFitting:
             ratio = params["ratio"]
             if self.same_width:
                 ratio = ratio[self.atom_types]
-        else:
-            raise ValueError("The model type is not valid.")
+                
         height = params["height"]
         if (height < 0).any():
             logging.warning(
@@ -811,8 +808,6 @@ class ImageModelFitting:
             peak_local = voigt_2d_numba(
                 local_X, local_Y, pos_x % 1, pos_y % 1, height, sigma, gamma, ratio
             )
-        else:
-            raise ValueError("The model type is not valid.")
 
         for atomic_column_index in range(self.num_coordinates):
             global_X = local_X + pos_x[atomic_column_index].astype(int)
