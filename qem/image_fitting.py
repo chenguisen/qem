@@ -12,7 +12,7 @@ from hyperspy._signals.signal2d import Signal2D
 from matplotlib.path import Path
 from matplotlib_scalebar.scalebar import ScaleBar
 from scipy.ndimage import gaussian_filter
-from scipy.optimize import lsq_linear
+from scipy.optimize import lsq_linear, minimize
 from scipy.sparse import coo_matrix
 from scipy.sparse.linalg import spsolve
 from skimage.feature.peak import peak_local_max
@@ -31,6 +31,7 @@ from qem.model import (
     VoigtModel,
     GaussianKernel,
 )
+from qem.processing import butterworth_window
 from qem.refine import calculate_center_of_mass
 from qem.utils import get_random_indices_in_batches, remove_close_coordinates
 from qem.voronoi import voronoi_integrate, calculate_point_record, fast_voronoi_point_record
@@ -73,7 +74,7 @@ class ImageModelFitting:
         """
         if elements is None:
             elements = ["Sr", "Ti", "O"]
-            
+
         # Store instance variables
         self.image = image
         self.dx = dx
@@ -84,7 +85,7 @@ class ImageModelFitting:
         self.pbc = pbc
         self.fit_background = fit_background
         self.gpu_memory_limit = gpu_memory_limit
-        
+
         # Create model instance based on type
         try:
             if model_type.lower() == "gaussian":
@@ -98,15 +99,25 @@ class ImageModelFitting:
         except Exception as e:
             logging.error(f"Failed to initialize model with {backend} backend: {str(e)}")
             raise
-        
+
         # Create Gaussian kernel for filtering
         self.kernel = GaussianKernel(backend=self.model.backend)
-        
+
         # Get backend modules from model
         self.backend = self.model.backend
         self.K = self.model.K
         self.ops = self.model.ops
-        
+
+        # Initialize missing attributes
+        self.fit_local = False
+        self.local_shape = image.shape
+        self._atom_types = np.array([])
+        self._coordinates = np.array([])
+        self.atoms_selected = np.array([])
+        self.coordinates_history = dict()
+        self.coordinates_state = 0
+        self.init_background = 0.0
+
         # Initialize other attributes
         self.params = {}
         self.converged = False
@@ -132,7 +143,7 @@ class ImageModelFitting:
             array: Predicted image
         """
         if params is None:
-            if self.params is None:
+            if not self.params:
                 self.init_params()
             params = self.params
         
@@ -142,49 +153,57 @@ class ImageModelFitting:
             Y = self.Y
 
         # Validate parameters
-        required_params = ["pos_x", "pos_y", "height"]
+        required_params = ["pos_x", "pos_y", "height", "width"]
         if not all(k in params for k in required_params):
             raise ValueError(f"Missing required parameters in params dict: {required_params}")
 
-        # Get parameters
+        # Get parameters and convert to backend tensors
         pos_x = self.ops.convert_to_tensor(params["pos_x"], dtype='float32')
         pos_y = self.ops.convert_to_tensor(params["pos_y"], dtype='float32')
         height = self.ops.convert_to_tensor(params["height"], dtype='float32')
-        width = params["width"]
+        width = self.ops.convert_to_tensor(params["width"], dtype='float32')
         
         # Handle same width for different atom types
-        if self.same_width:
-            if "width" in params:
-                width = width[self.atom_types]
-            if "ratio" in params and isinstance(self.model, VoigtModel):
-                params["ratio"] = params["ratio"][self.atom_types]
+        if self.same_width and hasattr(self, 'atom_types') and len(self.atom_types) > 0:
+            if len(width.shape) > 0 and len(width) == len(np.unique(self.atom_types)):
+                width = self.ops.take(width, self.atom_types)
         
         # Update background in model
         background = params.get("background", 0.0)
         self.model.background = background
 
-        # Prepare model arguments
-        model_args = [width]
+        # Prepare model arguments based on model type
         if isinstance(self.model, VoigtModel):
-            model_args.append(params["ratio"])
-        
-        if use_numba:
-            # Use numba version for faster CPU computation
-            prediction = self.model.sum_numba(X, Y, pos_x, pos_y, height, *model_args)
+            ratio = self.ops.convert_to_tensor(params.get("ratio", 0.9), dtype='float32')
+            if self.same_width and hasattr(self, 'atom_types') and len(self.atom_types) > 0:
+                if len(ratio.shape) > 0 and len(ratio) == len(np.unique(self.atom_types)):
+                    ratio = self.ops.take(ratio, self.atom_types)
+            prediction = self.model.sum(X, Y, pos_x, pos_y, height, width, ratio, local=self.gpu_memory_limit)
         else:
-            # Use the model's sum method with appropriate backend
-            prediction = self.model.sum(X, Y, pos_x, pos_y, height, *model_args)
+            prediction = self.model.sum(X, Y, pos_x, pos_y, height, width, local=self.gpu_memory_limit)
             
-            # Handle periodic boundary conditions
-            if self.pbc:
-                for i, j in [(1, 0), (0, 1), (-1, 0), (0, -1), 
-                            (1, 1), (-1, -1), (1, -1), (-1, 1)]:
+        # Handle periodic boundary conditions
+        if self.pbc:
+            for i, j in [(1, 0), (0, 1), (-1, 0), (0, -1), 
+                        (1, 1), (-1, -1), (1, -1), (-1, 1)]:
+                if isinstance(self.model, VoigtModel):
                     prediction += self.model.sum(
                         X, Y,
                         pos_x + i * self.nx,
                         pos_y + j * self.ny,
                         height,
-                        *model_args
+                        width,
+                        ratio,
+                        local=self.gpu_memory_limit
+                    )
+                else:
+                    prediction += self.model.sum(
+                        X, Y,
+                        pos_x + i * self.nx,
+                        pos_y + j * self.ny,
+                        height,
+                        width,
+                        local=self.gpu_memory_limit
                     )
 
         return prediction
@@ -210,16 +229,16 @@ class ImageModelFitting:
     @property
     def volume(self):
         """Calculate the volume of each peak in the model.
-        
+
         Returns:
             numpy.ndarray: Array of volumes for each peak.
         """
         if not self.params:
             raise ValueError("Parameters not initialized. Call init_params first.")
-            
+
         # Update the model's pixel size
         self.model.dx = self.dx
-        
+
         # Create parameters dict for volume calculation
         params = self.params.copy()
         if self.same_width:
@@ -228,12 +247,12 @@ class ImageModelFitting:
                 params["width"] = params["width"]
             if "ratio" in params:
                 params["ratio"] = params["ratio"]
-                
+
         return self.model.volume(params)
 
     @property
     def num_coordinates(self):
-        return self.coordinates.shape[0]
+        return len(self._coordinates) if len(self._coordinates.shape) > 0 else 0
 
     @property
     def coordinates(self):
@@ -379,16 +398,16 @@ class ImageModelFitting:
         # Initialize position and height parameters
         pos_x = copy.deepcopy(self.coordinates[:, 0]).astype(float)
         pos_y = copy.deepcopy(self.coordinates[:, 1]).astype(float)
-        
+
         # Initialize background
         if self.fit_background:
             init_background = self.image.min()
         else:
             self.init_background = init_background
-            
+
         # Set background in model
         self.model.background = init_background
-        
+
         # Initialize heights from image values
         height = (
             self.image[pos_y.astype(int), pos_x.astype(int)].ravel() - init_background
@@ -410,7 +429,7 @@ class ImageModelFitting:
 
         # Add model-specific parameters
         params["width"] = width
-            
+
         if isinstance(self.model, VoigtModel):
             if self.same_width:
                 ratio = np.tile(0.9, 1).astype(float)
@@ -855,11 +874,10 @@ class ImageModelFitting:
         # Compute the sum of the Gaussians
         prediction = self.predict(params, X=X, Y=Y)
         diff = image - prediction
-        if not self.skip_window:
-            diff = diff * self.window
-        # dammping the difference near the edge
-        mse = jnp.sqrt(jnp.mean(diff**2))
-        L1 = jnp.mean(jnp.abs(diff))
+        diff = diff * self.window
+        # damping the difference near the edge
+        mse = self.ops.sqrt(self.ops.mean(self.ops.square(diff)))
+        L1 = self.ops.mean(self.ops.abs(diff))
         return mse + L1
 
     def residual(self, params: dict, image: np.ndarray, X: np.ndarray, Y: np.ndarray):
@@ -929,65 +947,47 @@ class ImageModelFitting:
         step_size: float = 0.01,
         verbose: bool = False,
     ):
-        opt = optax.adam(learning_rate=step_size)
-        solver = OptaxSolver(
-            opt=opt, fun=self.loss, maxiter=maxiter, tol=tol, verbose=verbose
+        """Backend-agnostic optimization using scipy.optimize"""
+        def objective_fn(params_array, param_shapes, param_keys):
+            # Convert 1D array back to dictionary of parameters
+            params_dict = {}
+            start = 0
+            for key, shape in zip(param_keys, param_shapes):
+                size = np.prod(shape)
+                end = start + size
+                params_dict[key] = params_array[start:end].reshape(shape)
+                start = end
+            return float(self.loss(params_dict, image, X, Y))
+
+        # Flatten params into a 1D array and get shapes
+        param_keys = sorted(params.keys())
+        param_shapes = [np.array(params[key]).shape for key in param_keys]
+        params_flat = np.concatenate([np.array(params[key]).ravel() for key in param_keys])
+
+        # Perform the optimization
+        res = minimize(
+            fun=objective_fn,
+            x0=params_flat,
+            args=(param_shapes, param_keys),
+            method='L-BFGS-B',
+            options={'maxiter': maxiter, 'ftol': tol}
         )
-        res = solver.run(params, image=image, X=X, Y=Y)
-        params = res[0]
-        return params
 
-    def gradient_descent(
-        self,
-        image: np.ndarray,
-        params: dict,
-        X: np.ndarray,
-        Y: np.ndarray,
-        keys_to_mask: list[str],
-        step_size: float = 0.001,
-        maxiter: int = 10000,
-        tol: float = 1e-4,
-    ):
-        opt_init, opt_update, get_params = optimizers.adam(
-            step_size=step_size, b1=0.9, b2=0.999
-        )
-        opt_state = opt_init(params)
+        # Unflatten the parameters back into the dictionary form
+        optimized_params = {}
+        start = 0
+        for key, shape in zip(param_keys, param_shapes):
+            size = np.prod(shape)
+            end = start + size
+            optimized_params[key] = res.x[start:end].reshape(shape)
+            start = end
 
-        def step(step_index, opt_state, params, image, X, Y, keys_to_mask=None):
-            if keys_to_mask is None:
-                keys_to_mask = []
-            loss, grads = value_and_grad(self.loss)(params, image, X, Y)
-            masked_grads = mask_grads(grads, keys_to_mask)
-            opt_state = opt_update(step_index, masked_grads, opt_state)
-            return loss, opt_state
+        return optimized_params
 
-        # Initialize the loss
-        loss = np.inf
-        loss_list = []
-        # Loop over the number of iterations
-        for i in range(maxiter):
-            # Update the parameters
-            new_params = get_params(opt_state)
-            loss_new, opt_state = step(
-                i, opt_state, new_params, image, X, Y, keys_to_mask
-            )
-
-            # Check if the loss has converged
-            if np.abs(loss - loss_new) < tol * loss:
-                break
-            # Update the loss
-            loss = loss_new
-            loss_list.append(loss)
-
-            # Print the loss every 10 iterations
-            if i % 10 == 0:
-                logging.info(f"Iteration {i}: loss = {loss:.6f}")
-        plt.plot(loss_list, "o-")
-        plt.xlabel("Iteration")
-        plt.ylabel("Loss")
-        # Update the model
-        self.params = new_params
-        return new_params
+    def gradient_descent(self, *args, **kwargs):
+        """Deprecated: Use optimize() method instead"""
+        logging.warning("gradient_descent is deprecated. Use optimize() method instead.")
+        return self.optimize(*args, **kwargs)
 
     def minimize(
         self,
@@ -1096,10 +1096,10 @@ class ImageModelFitting:
                         global_prediction = self.predict(params, use_numba=False)
                         local_prediction = self.predict(select_params,use_numba=False)
                     else:
-                        raise Exception(
+                        raise RuntimeError(
                             "GPU memory limit exceeded, using the fallback of local prediction."
                         )  # Explicitly raise an exception to use the fallback
-                except Exception:
+                except RuntimeError:
                     self.gpu_memory_limit = True
                     global_prediction = self.predict(params,use_numba=False)
                     local_prediction = self.predict(select_params,use_numba=False)
@@ -1572,33 +1572,28 @@ class ImageModelFitting:
                 mask = self.atom_types == atom_type
                 mask = mask.squeeze()
                 for key, value in params.items():
-                    is_jax_traced = isinstance(params[key], jax.numpy.ndarray)
                     if key in ["width", "ratio"]:
-                        if is_jax_traced:
-                            # Calculate the mean only for the masked values using JAX
-                            mean_value = jnp.mean(value[mask])
-                            # Use JAX's indexing to update the values
-                            params[key] = value.at[mask].set(mean_value)
-                        else:
-                            # For non-JAX arrays, we can proceed with NumPy operations
-                            mean_value = np.mean(value[mask])
-                            params[key][mask] = mean_value
+                        # Convert to numpy for consistent handling
+                        value_np = np.array(value)
+                        mean_value = np.mean(value_np[mask])
+                        value_np[mask] = mean_value
+                        params[key] = value_np
         return params
 
     def project_params(self, params: dict):
         for key, value in params.items():
             if key == "pos_x":
-                params[key] = jnp.clip(value, 0, self.nx - 1)
+                params[key] = self.ops.clip(value, 0, self.nx - 1)
             elif key == "pos_y":
-                params[key] = jnp.clip(value, 0, self.ny - 1)
+                params[key] = self.ops.clip(value, 0, self.ny - 1)
             elif key == "height":
-                params[key] = jnp.clip(value, 0, np.sum(self.image))
+                params[key] = self.ops.clip(value, 0, np.sum(self.image))
             elif key == "width":
-                params[key] = jnp.clip(value, 1, min(self.nx, self.ny) / 2)
+                params[key] = self.ops.clip(value, 1, min(self.nx, self.ny) / 2)
             elif key == "ratio":
-                params[key] = jnp.clip(value, 0, 1)
+                params[key] = self.ops.clip(value, 0, 1)
             elif key == "background":
-                params[key] = jnp.clip(value, 0, np.max(self.image))
+                params[key] = self.ops.clip(value, 0, np.max(self.image))
         return params
 
     def update_coordinates(self):
@@ -1956,8 +1951,8 @@ class ImageModelFitting:
 
     @property
     def num_coordinates(self):
-        return self.coordinates.shape[0]
+        return len(self._coordinates) if len(self._coordinates.shape) > 0 else 0
 
     @property
     def num_atom_types(self):
-        return len(np.unique(self.atom_types))
+        return len(np.unique(self._atom_types)) if len(self._atom_types) > 0 else 0
