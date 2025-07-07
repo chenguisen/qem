@@ -120,6 +120,7 @@ class ImageModelFitting:
         self.X, self.Y = np.meshgrid(x, y, indexing="xy")
         self.converged = False
         self.params = dict()
+        self.skip_window = False  # Whether to skip the windowing in the loss function
         
         # Create JIT-compiled function for this image size if using GPU memory limit
         if gpu_memory_limit:
@@ -688,75 +689,77 @@ class ImageModelFitting:
         return prediction
 
     def predict(self, params: dict = None, X: np.ndarray = None, Y: np.ndarray = None):
-        if params is None:
-            params = self.params
-        if X is None or Y is None:
-            X = self.X
-            Y = self.Y
-        background = params.get("background", self.init_background)
-        pos_x = jnp.asarray(params["pos_x"])
-        pos_y = jnp.asarray(params["pos_y"])
-        height = jnp.asarray(params["height"])
-        sigma = params.get("sigma")
-        gamma = params.get("gamma")
-        ratio = params.get("ratio")
-        
-        if pos_x.size < self.num_coordinates:
-            mask = self.atoms_selected
+        if self.fit_background:
+            background = params["background"]
         else:
-            mask = np.ones(self.num_coordinates, dtype=bool)
-
-        if self.same_width:
-            if self.model_type in {"gaussian", "voigt"} and sigma is not None:
-                sigma = jnp.asarray(sigma[self.atom_types[mask]])
-            if self.model_type in {"voigt", "lorentzian"} and gamma is not None:
-                gamma = jnp.asarray(gamma[self.atom_types[mask]])
-            if self.model_type == "voigt" and ratio is not None:
-                ratio = jnp.asarray(ratio[self.atom_types[mask]])
-
+            background = 0
+        if X is None or Y is None:
+            X, Y = self.X, self.Y
         if self.model_type == "gaussian":
-            if self.gpu_memory_limit:
-                # Calculate static window size based on maximum sigma
-                window_size = get_static_window_size(jnp.max(sigma))
-                prediction = self._gaussian_sum_local(
-                    pos_x,
-                    pos_y,
-                    height,
-                    sigma,
-                    background,
-                    window_size
-                )
-            else:
-                prediction = gaussian_sum_parallel(
-                    X, Y, pos_x, pos_y, height, sigma, background
-                )
-        elif self.model_type == "voigt":
-            prediction = voigt_sum_parallel(
-                X, Y, pos_x, pos_y, height, sigma, gamma, ratio, background
+            prediction = gaussian_sum_parallel(
+                X,
+                Y,
+                params["pos_x"],
+                params["pos_y"],
+                params["height"],
+                params["sigma"],
+                background,
             )
-        elif self.model_type == "lorentzian":
-            prediction = lorentzian_sum_parallel(
-                X, Y, pos_x, pos_y, height, gamma, background
-            )
-
-        if self.pbc:
-            if self.gpu_memory_limit:
-                # Reuse the same window size for periodic images
-                window_size = get_static_window_size(jnp.max(sigma))
-                for i, j in [(1, 0), (0, 1), (-1, 0), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1)]:
-                    prediction += self._gaussian_sum_local(
-                        pos_x + i * self.nx,
-                        pos_y + j * self.ny,
-                        height,
-                        sigma,
-                        0,  # No background for periodic images
-                        window_size
+            if self.pbc:
+                for i, j in [
+                    (1, 0),
+                    (0, 1),
+                    (-1, 0),
+                    (0, -1),
+                    (1, 1),
+                    (-1, -1),
+                    (1, -1),
+                    (-1, 1),
+                ]:
+                    prediction += gaussian_sum_parallel(
+                        X,
+                        Y,
+                        params["pos_x"] + i * self.nx,
+                        params["pos_y"] + j * self.ny,
+                        params["height"],
+                        params["sigma"],
+                        0,
                     )
-            else:
-                prediction = self.apply_pbc(prediction, gaussian_sum_parallel, params, X, Y)
-
+        elif self.model_type == "voigt":
+            prediction = voigt_parallel(
+                X,
+                Y,
+                params["pos_x"],
+                params["pos_y"],
+                params["height"],
+                params["sigma"],
+                params["gamma"],
+                params["ratio"],
+                background,
+            )
+            if self.pbc:
+                for i, j in [
+                    (1, 0),
+                    (0, 1),
+                    (-1, 0),
+                    (0, -1),
+                    (1, 1),
+                    (-1, -1),
+                    (1, -1),
+                    (-1, 1),
+                ]:
+                    prediction += voigt_parallel(
+                        X,
+                        Y,
+                        params["pos_x"] + i * self.nx,
+                        params["pos_y"] + j * self.ny,
+                        params["height"],
+                        params["sigma"],
+                        params["gamma"],
+                        params["ratio"],
+                        0,
+                    )
         return prediction
-
     # fitting
 
     def linear_estimator(self, params: dict = None, non_negative=False):
