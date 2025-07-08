@@ -1,3 +1,4 @@
+from typing import override
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -12,50 +13,51 @@ import keras
 class ImageModel(keras.Model):
     """Base class for all image models."""
 
-    def __init__(self, dx=1.0, background=0.0):
+    def __init__(self, params, dx=1.0, background=0.0):
         """Initialize the model.
         
         Args:
+            params (dict): A dictionary of initial parameters for the model.
             dx (float, optional): Pixel size. Defaults to 1.0.
             background (float, optional): Background level. Defaults to 0.0.
-            backend (str, optional): Backend to use ('tensorflow', 'pytorch', or 'jax'). Defaults to 'jax'.
         """
         super().__init__()
         self.dx = dx
         self.background = background
         self.ops = keras.ops
-        
-    def set_params(self, params):
-        self.params = params
-        
             
+    def set_params(self, params):
+        self.initial_params = {k: self.ops.convert_to_tensor(v) for k, v in params.items()}
+        self.num_coordinates = self.initial_params['pos_x'].shape[0]
+        
     def build(self, input_shape):
-        """Create trainable weights for the model from a params dictionary."""
-        self.w = {}
-        for key, value in params.items():
-            weight = self.add_weight(
-                name=key,
-                shape=value.shape,
-                initializer=keras.initializers.Constant(value),
-                trainable=True
-            )
-            self.w[key] = weight
-        # We call build() here with a dummy shape because some Keras layers
-        # require it, though we are managing weights manually.
+        """Create and initialize trainable weights for the model."""
+        self.pos_x = self.add_weight(shape=(self.initial_params['pos_x'].shape[0],), initializer=keras.initializers.Constant(self.initial_params['pos_x']), name="pos_x")
+        self.pos_y = self.add_weight(shape=(self.initial_params['pos_y'].shape[0],), initializer=keras.initializers.Constant(self.initial_params['pos_y']), name="pos_y")
+        self.height = self.add_weight(shape=(self.initial_params['height'].shape[0],), initializer=keras.initializers.Constant(self.initial_params['height']), name="height")
+        self.width = self.add_weight(shape=(self.initial_params['width'].shape[0],), initializer=keras.initializers.Constant(self.initial_params['width']), name="width")
+        self.background = self.add_weight(shape=(), initializer=keras.initializers.Constant(self.initial_params['background']), name="background")
         super().build(input_shape)
+        
+    def get_params(self):
+        return {
+            "pos_x": np.array(self.pos_x),
+            "pos_y": np.array(self.pos_y),
+            "height": np.array(self.height),
+            "width": np.array(self.width),
+            "background": np.array(self.background),
+        }
 
     def call(self, inputs):
         """Forward pass of the model."""
         X, Y = inputs
-        # Use the trainable weights from the dictionary for the calculation
-        return self.sum(X, Y, **self.w,local=True)
+        return self.sum(X, Y, self.pos_x, self.pos_y, self.height, self.width)
 
     @abstractmethod
     def model_fn(self, x, y, pos_x, pos_y, height, width, *args):
         """Core model function that defines the peak shape."""
         pass
 
-    @staticmethod
     @abstractmethod
     def model_fn_numba(x, y, pos_x, pos_y, height, width, *args):
         """Numba version of the model function."""
@@ -307,7 +309,7 @@ class VoigtModel(ImageModel):
 
 class GaussianKernel:
     """Gaussian kernel implementation."""
-    
+
     def __init__(self):
         """Initialize the kernel.
         

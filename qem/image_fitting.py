@@ -19,6 +19,7 @@ from scipy.sparse import coo_matrix
 from scipy.sparse.linalg import spsolve
 from skimage.feature.peak import peak_local_max
 from tqdm import tqdm
+import keras
 
 # Local imports
 # Local imports
@@ -99,13 +100,14 @@ class ImageFitting:
         self.gpu_memory_limit = gpu_memory_limit
 
         # Create model instance based on type
+        params = {}
         try:
             if model_type.lower() == "gaussian":
-                self.model = GaussianModel(dx=dx, background=0.0)
+                self.model = GaussianModel(params, dx=dx, background=0.0)
             elif model_type.lower() == "lorentzian":
-                self.model = LorentzianModel(dx=dx, background=0.0)
+                self.model = LorentzianModel(params, dx=dx, background=0.0)
             elif model_type.lower() == "voigt":
-                self.model = VoigtModel(dx=dx, background=0.0)
+                self.model = VoigtModel(params, dx=dx, background=0.0)
             else:
                 raise ValueError(f"Model type {model_type} not supported. Use 'gaussian', 'lorentzian', or 'voigt'")
         except Exception as e:
@@ -119,11 +121,8 @@ class ImageFitting:
         self.ops = self.model.ops
 
         # Initialize missing attributes
-        self.fit_local = False
-        self.local_shape = image.shape
         self._atom_types = np.array([])
         self._coordinates = np.array([])
-        self.atoms_selected = np.array([])
         self.coordinates_history = dict()
         self.coordinates_state = 0
         self.init_background = 0.0
@@ -143,7 +142,7 @@ class ImageFitting:
         self.X = self.ops.convert_to_tensor(X, dtype="float32")
         self.Y = self.ops.convert_to_tensor(Y, dtype="float32")
 
-    def predict(self, params=None, X=None, Y=None):
+    def predict(self, params=None, X=None, Y=None,local=False, atoms_selected=None):
         """Predict the image based on current parameters.
         
         Args:
@@ -174,25 +173,31 @@ class ImageFitting:
         pos_y = params["pos_y"]
         height = params["height"]
         width = params["width"]
+        
 
         # Handle same width for different atom types
         if self.same_width and hasattr(self, 'atom_types') and len(self.atom_types) > 0:
             if len(width.shape) > 0 and len(width) == len(np.unique(self.atom_types)):
-                width = self.ops.take(width, self.atom_types)
+                if atoms_selected is not None:
+                    width = self.ops.take(width, self.atom_types[atoms_selected])
+                else:
+                    width = self.ops.take(width, self.atom_types)
         
         # Update background in model
-        background = params.get("background", 0.0)
-        self.model.background = background
+        self.model.background = params.get("background", 0.0)
 
         # Prepare model arguments based on model type
         if isinstance(self.model, VoigtModel):
             ratio = params.get("ratio", 0.9)
             if self.same_width and hasattr(self, 'atom_types') and len(self.atom_types) > 0:
                 if len(ratio.shape) > 0 and len(ratio) == len(np.unique(self.atom_types)):
-                    ratio = self.ops.take(ratio, self.atom_types)
-            prediction = self.model.sum(X, Y, pos_x, pos_y, height, width, ratio, local=self.gpu_memory_limit)
+                    if atoms_selected is not None:
+                        ratio = self.ops.take(ratio, self.atom_types[atoms_selected])
+                    else:
+                        ratio = self.ops.take(ratio, self.atom_types)
+            prediction = self.model.sum(X, Y, pos_x, pos_y, height, width, ratio, local=local)
         else:
-            prediction = self.model.sum(X, Y, pos_x, pos_y, height, width, local=self.gpu_memory_limit)
+            prediction = self.model.sum(X, Y, pos_x, pos_y, height, width, local=local)
             
         # Handle periodic boundary conditions
         if self.pbc:
@@ -206,7 +211,7 @@ class ImageFitting:
                         height,
                         width,
                         ratio,
-                        local=self.gpu_memory_limit
+                        local=local
                     )
                 else:
                     prediction += self.model.sum(
@@ -215,7 +220,7 @@ class ImageFitting:
                         pos_y + j * self.ny,
                         height,
                         width,
-                        local=self.gpu_memory_limit
+                        local=local
                     )
 
         return prediction
@@ -227,16 +232,10 @@ class ImageFitting:
         """
         Returns the window used for fitting.
 
-        If `fit_local` is True, a Butterworth window is created with the shape of `local_shape`.
-        If `fit_local` is False, a Butterworth window is created with the shape of `image.shape`.
-
         Returns:
             numpy.ndarray: The Butterworth window used for fitting.
         """
-        if self.fit_local:
-            return butterworth_window(self.local_shape, 0.5, 10)
-        else:
-            return butterworth_window(self.image.shape, 0.5, 10)
+        return butterworth_window(self.image.shape, 0.5, 10)
 
     @property
     def volume(self):
@@ -795,6 +794,7 @@ class ImageFitting:
                     s=1,
                 )
                 plt.scatter(x, y, color="red", s=2)
+                plt.gca().set_aspect("equal", adjustable="box")
                 plt.subplot(1, 2, 2)
                 plt.imshow(region, cmap="gray")
                 plt.scatter(
@@ -951,91 +951,31 @@ class ImageFitting:
         self,
         image: np.ndarray,
         params: dict,
-        X: np.ndarray,
-        Y: np.ndarray,
+        X: np.ndarray = None,
+        Y: np.ndarray = None,
         maxiter: int = 1000,
         tol: float = 1e-4,
         step_size: float = 0.01,
         verbose: bool = False,
+        batch_size: int = 1024,
     ):
-        """Backend-agnostic optimization using scipy.optimize"""
-        def objective_fn(params_array, param_shapes, param_keys):
-            # Convert 1D array back to dictionary of parameters
-            params_dict = {}
-            start = 0
-            for key, shape in zip(param_keys, param_shapes):
-                size = np.prod(shape)
-                end = start + size
-                params_dict[key] = params_array[start:end].reshape(shape)
-                start = end
-            return float(self.loss(params_dict, image, X, Y))
-
-        # Flatten params into a 1D array and get shapes
-        param_keys = sorted(params.keys())
-        param_shapes = [np.array(params[key]).shape for key in param_keys]
-        params_flat = np.concatenate([np.array(params[key]).ravel() for key in param_keys])
-
-        # Perform the optimization
-        res = minimize(
-            fun=objective_fn,
-            x0=params_flat,
-            args=(param_shapes, param_keys),
-            method='L-BFGS-B',
-            options={'maxiter': maxiter, 'ftol': tol}
+        if X is None or Y is None:
+            X = self.X
+            Y = self.Y
+        self.model.set_params(params)
+        if not self.model.built:
+            self.model.build(self.model.num_coordinates)
+        self.model.compile(optimizer=keras.optimizers.Adam(learning_rate=step_size),
+            loss='mean_squared_error' )
+        early_stopping = keras.callbacks.EarlyStopping(
+            monitor='loss',
+            min_delta=tol,
+            patience=10, 
+            verbose=verbose,
+            restore_best_weights=True
         )
-
-        # Unflatten the parameters back into the dictionary form
-        optimized_params = {}
-        start = 0
-        for key, shape in zip(param_keys, param_shapes):
-            size = np.prod(shape)
-            end = start + size
-            optimized_params[key] = res.x[start:end].reshape(shape)
-            start = end
-
-        return optimized_params
-
-    def gradient_descent(self, *args, **kwargs):
-        """Deprecated: Use optimize() method instead"""
-        logging.warning("gradient_descent is deprecated. Use optimize() method instead.")
-        return self.optimize(*args, **kwargs)
-
-    def minimize(
-        self,
-        params: dict = None,  # type: ignore
-        tol: float = 1e-4,
-    ):
-        if params is None:
-            params = self.params if self.params is not None else self.init_params()
-
-        # Use the existing optimize method which uses Keras Adam
-        # Note: The 'optimize' method was changed to use scipy. We revert it here for 'minimize'
-        optimizer = self.model.K.optimizers.Adam(learning_rate=0.01) # step_size can be a parameter
-
-        trainable_params = {k: self.model.keras.Variable(v) for k, v in params.items()}
-
-        prev_loss = float('inf')
-        maxiter = 1000 # Can be made a parameter
-
-        def train_step(trainable_vars):
-            with self.model.K.GradientTape() as tape:
-                loss_value = self.loss(trainable_vars, self.image_tensor, self.X, self.Y)
-            
-            grads = tape.gradient(loss_value, list(trainable_vars.values()))
-            optimizer.apply_gradients(zip(grads, list(trainable_vars.values())))
-            return loss_value
-
-        for i in range(maxiter):
-            loss_value = train_step(trainable_params)
-
-            if abs(prev_loss - loss_value) < tol:
-                break
-            prev_loss = loss_value
-
-        optimized_params = {k: self.model.K.convert_to_numpy(v) for k, v in trainable_params.items()}
-        
-        self.params = optimized_params
-        self.model = self.predict(optimized_params)
+        self.model.fit([X, Y], image, epochs=maxiter, verbose=verbose, callbacks=[early_stopping], batch_size=batch_size)
+        optimized_params = self.model.get_params()
         return optimized_params
 
     def fit_global(
@@ -1048,13 +988,11 @@ class ImageFitting:
     ):
         if params is None:
             params = self.params if self.params is not None else self.init_params()
-        self.fit_local = False
         params = self.optimize(
-            self.image, params, np.arange(self.nx), np.arange(self.ny), maxiter, tol, step_size, verbose
+            image = self.image_tensor, params=params, maxiter=maxiter, tol=tol, step_size=step_size, verbose=verbose
         )
-        # params = self.same_width_on_atom_type(params)
         self.params = params
-        self.model = self.predict(params)
+        self.prediction = self.predict(params)
         return params
 
     def fit_random_batch(
@@ -1071,7 +1009,6 @@ class ImageFitting:
         if params is None:
             params = self.params if self.params is not None else self.init_params()
 
-        self.fit_local = False
         self.converged = False
         # params = self.linear_estimator(params["pos_x"], params["pos_y"])
         while self.converged is False and num_epoch > 0:
@@ -1086,29 +1023,19 @@ class ImageFitting:
 
 
             for index in tqdm(random_batches, desc="Fitting random batch"):
-                mask = np.zeros(self.num_coordinates, dtype=bool)
-                mask[index] = True
-                self.atoms_selected = mask
-                select_params = self.select_params(params, mask)
-                try:
-                    if not self.gpu_memory_limit:
-                        global_prediction = self.predict(params)
-                        local_prediction = self.predict(select_params)
-                    else:
-                        raise RuntimeError(
-                            "GPU memory limit exceeded, using the fallback of local prediction."
-                        )  # Explicitly raise an exception to use the fallback
-                except RuntimeError:
-                    self.gpu_memory_limit = True
-                    global_prediction = self.predict(params)
-                    local_prediction = self.predict(select_params)
+                atoms_selected = np.zeros(self.num_coordinates, dtype=bool)
+                atoms_selected[index] = True
+                select_params = self.select_params(params, atoms_selected)
+
+                global_prediction = self.predict(params,local=True)
+                local_prediction = self.predict(select_params,local=True,atoms_selected=atoms_selected)
                 local_residual = global_prediction - local_prediction
                 local_target = image - local_residual
-                select_params = self.optimize(
-                    local_target, select_params, self.X, self.Y, maxiter, tol, step_size, verbose
+                optimized_select_params = self.optimize(
+                    local_target, select_params, maxiter=maxiter, tol=tol, step_size=step_size, verbose=verbose
                 )
-                select_params = self.project_params(select_params)
-                params = self.update_from_local_params(params, select_params, mask)
+                cliped_optimized_select_params = self.project_params(optimized_select_params)
+                params = self.update_from_local_params(params, cliped_optimized_select_params, atoms_selected)
                 if plot:
                     plt.subplots(1, 3, figsize=(15, 5))
                     plt.subplot(1, 3, 1)
@@ -1134,7 +1061,7 @@ class ImageFitting:
         self.converged = self.convergence(params, pre_params, tol)
         # params = self.linear_estimator(params["pos_x"], params["pos_y"])
         self.params = params
-        self.model = self.predict(params)
+        self.prediction = self.predict(params)
         return params
 
     def fit_region(
@@ -1330,6 +1257,7 @@ class ImageFitting:
         self.params = params
         self.model = self.predict(params)
         return params
+
 
     def fit_voronoi(
             self,
@@ -1548,19 +1476,19 @@ class ImageFitting:
         self, params: dict, local_params: dict, mask: np.ndarray, mask_local=None
     ):
         for key, value in local_params.items():
-            value = np.array(value)
+            value = self.ops.convert_to_tensor(value)
             shared_value_list = ["background"]
             if self.same_width:
                 shared_value_list += ["width", "ratio"]
             if key not in shared_value_list:
                 if mask_local is None:
-                    params[key][mask] = value
+                    params[key] = params[key].at[mask].set(value)
                 else:
-                    params[key][mask] = value[mask_local]
+                    params[key] = params[key].at[mask].set(value[mask_local])
             else:
                 weight = mask.sum() / self.num_coordinates
                 update = value - params[key]
-                params[key] += update * weight
+                params[key] = params[key] + update * weight
                 # params[key] = value
         return params
 
