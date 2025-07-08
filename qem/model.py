@@ -13,11 +13,10 @@ import keras
 class ImageModel(keras.Model):
     """Base class for all image models."""
 
-    def __init__(self, params, dx=1.0, background=0.0):
+    def __init__(self, dx=1.0, background=0.0):
         """Initialize the model.
         
         Args:
-            params (dict): A dictionary of initial parameters for the model.
             dx (float, optional): Pixel size. Defaults to 1.0.
             background (float, optional): Background level. Defaults to 0.0.
         """

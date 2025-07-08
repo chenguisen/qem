@@ -100,19 +100,7 @@ class ImageFitting:
         self.gpu_memory_limit = gpu_memory_limit
 
         # Create model instance based on type
-        params = {}
-        try:
-            if model_type.lower() == "gaussian":
-                self.model = GaussianModel(params, dx=dx, background=0.0)
-            elif model_type.lower() == "lorentzian":
-                self.model = LorentzianModel(params, dx=dx, background=0.0)
-            elif model_type.lower() == "voigt":
-                self.model = VoigtModel(params, dx=dx, background=0.0)
-            else:
-                raise ValueError(f"Model type {model_type} not supported. Use 'gaussian', 'lorentzian', or 'voigt'")
-        except Exception as e:
-            logging.error(f"Failed to initialize model with {backend} backend: {str(e)}")
-            raise
+        self.model = self._create_model()
 
         # Create Gaussian kernel for filtering
         self.kernel = GaussianKernel()
@@ -142,6 +130,25 @@ class ImageFitting:
         self.X = self.ops.convert_to_tensor(X, dtype="float32")
         self.Y = self.ops.convert_to_tensor(Y, dtype="float32")
 
+    def _create_model(self, params=None):
+        """Create a new model instance based on the model type."""
+        if params is None:
+            background = 0.0
+        else:
+            background = params.get("background", 0.0)
+        
+        # Pass the full params dictionary and the specific background value
+        if self.model_type == "gaussian":
+            model = GaussianModel(dx=self.dx, background=background)
+        elif self.model_type == "lorentzian":
+            model = LorentzianModel(dx=self.dx, background=background)
+        elif self.model_type == "voigt":
+            model = VoigtModel(dx=self.dx, background=background)
+        else:
+            raise ValueError(f"Model type {self.model_type} not supported.")
+        if params is not None:
+            model.set_params(params)
+        return model
     def predict(self, params=None, X=None, Y=None,local=False, atoms_selected=None):
         """Predict the image based on current parameters.
         
@@ -995,7 +1002,7 @@ class ImageFitting:
         self.prediction = self.predict(params)
         return params
 
-    def fit_random_batch(
+    def fit_stochastic(
         self,
         params: dict = None,  # type: ignore
         num_epoch: int = 5,
@@ -1019,13 +1026,14 @@ class ImageFitting:
                 self.num_coordinates, batch_size
             )
             image = self.image
-            image = self.image
 
 
             for index in tqdm(random_batches, desc="Fitting random batch"):
                 atoms_selected = np.zeros(self.num_coordinates, dtype=bool)
                 atoms_selected[index] = True
                 select_params = self.select_params(params, atoms_selected)
+                self.model = self._create_model(select_params)
+                self.model.set_params(select_params)
 
                 global_prediction = self.predict(params,local=True)
                 local_prediction = self.predict(select_params,local=True,atoms_selected=atoms_selected)
