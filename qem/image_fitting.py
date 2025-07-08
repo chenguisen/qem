@@ -119,6 +119,7 @@ class ImageFitting:
         self.params = {}
         self.converged = False
         self.ny, self.nx = image.shape
+        self.regions = Regions(image=image)
         self.initialize_grid()
 
     def initialize_grid(self):
@@ -545,6 +546,8 @@ class ImageFitting:
         Returns:
             AtomicColumns: The atomic columns mapped from the CIF file.
         """
+        # find the column within the region_index
+        
         column_mask = self.region_column_labels == region_index
         region_mask = self.regions.region_map == region_index
 
@@ -583,7 +586,7 @@ class ImageFitting:
         atom_select = GetRegionSelection(
             image=self.image,
             invert_selection=invert_selection,
-            region_map=self.region_map,
+            region_map=self.regions.region_map,
         )
         try:
             atom_select.poly.verts = self.region_path_dict[region_index].vertices  # type: ignore
@@ -594,7 +597,7 @@ class ImageFitting:
             plt.pause(0.1)
 
         region_mask = atom_select.get_region_mask()
-        self.region_map[region_mask] = region_index
+        self.regions.region_map[region_mask] = region_index
         try:
             self.region_path_dict[region_index] = atom_select.path
         except AttributeError:
@@ -649,9 +652,9 @@ class ImageFitting:
             np.array: The coordinates of the peaks.
         """
         assert (
-            region_index in self.region_map
-        ), "The region index is not in the region map."
-        region_map = self.region_map == region_index
+            region_index in self.regions.keys
+        ), "The region index is not in the regions."
+        region_map = self.regions.region_map == region_index
         image_filtered = gaussian_filter(self.image, sigma)
         peaks_locations = peak_local_max(
             image_filtered * region_map,
@@ -1034,7 +1037,6 @@ class ImageFitting:
                 atoms_selected[index] = True
                 select_params = self.select_params(params, atoms_selected)
                 self.model = self._create_model(select_params)
-                self.model.set_params(select_params)
 
                 global_prediction = self.predict(params,local=True)
                 local_prediction = self.predict(select_params,local=True,atoms_selected=atoms_selected)
@@ -1209,9 +1211,9 @@ class ImageFitting:
         pos_x = self.params["pos_x"]
         pos_y = self.params["pos_y"]
         try:
-            max_radius = self.params["sigma"].max() * 5
+            max_radius = self.params["width"].max() * 5
         except KeyError:
-            max_radius = self.params["gamma"].max() * 5
+            max_radius = self.params["width"].max() * 5
         integrated_intensity, intensity_record, point_record = voronoi_integrate(
             s, pos_x, pos_y, max_radius=max_radius, pbc=self.pbc
         )
@@ -1352,7 +1354,7 @@ class ImageFitting:
             logging.warning("No coordinates found. Please run find_peaks first.")
             self.find_peaks()
         column_mask = self.region_column_labels == region_index
-        region_mask = self.region_map == region_index
+        region_mask = self.regions.region_map == region_index
         crystal_analyzer = CrystalAnalyzer(
             image=self.image,
             dx=self.dx,
@@ -1431,13 +1433,13 @@ class ImageFitting:
         plt.title("Original Image")
         plt.tight_layout()
         plt.subplot(1, 3, 2)
-        im = plt.imshow(self.model, cmap="gray", vmin=vmin, vmax=vmax)
+        im = plt.imshow(self.prediction, cmap="gray", vmin=vmin, vmax=vmax)
         plt.gca().set_aspect("equal", adjustable="box")
         plt.colorbar(im, fraction=0.046, pad=0.04)
         plt.title("Model")
         plt.tight_layout()
         plt.subplot(1, 3, 3)
-        im = plt.imshow(self.image - self.model, cmap="gray")
+        im = plt.imshow(self.image - self.prediction, cmap="gray")
         plt.colorbar(im, fraction=0.046, pad=0.04)
         plt.gca().set_aspect("equal", adjustable="box")
         plt.title("Residual")
@@ -1649,7 +1651,7 @@ class ImageFitting:
         # cmap = color_iter('Set3', self.num_regions)
         # cmap = plt.get_cmap("tab10", self.num_regions)
         plt.imshow(self.image, cmap="gray")
-        plt.imshow(self.region_map, alpha=0.5)
+        plt.imshow(self.regions.region_map, alpha=0.5)
         scalebar = self.scalebar
         plt.gca().add_artist(scalebar)
         plt.axis("off")
@@ -1682,3 +1684,13 @@ class ImageFitting:
     @property
     def num_atom_types(self):
         return len(np.unique(self._atom_types)) if len(self._atom_types) > 0 else 0
+    
+    @property
+    def region_column_labels(self):
+        return self.regions.region_map[
+            self.coordinates[:, 1].astype(int), self.coordinates[:, 0].astype(int)
+        ]
+
+    @property
+    def voronoi_volume(self):
+        return self._voronoi_volume
