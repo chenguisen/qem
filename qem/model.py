@@ -1,13 +1,11 @@
-from typing import override
-import jax
-import jax.numpy as jnp
-import numpy as np
-from numba import jit as njit
-from functools import partial
-from abc import ABC, abstractmethod
-
-from dotenv import load_dotenv
 import os
+from abc import ABC, abstractmethod
+from functools import partial
+
+import numpy as np
+from dotenv import load_dotenv
+from numba import jit as njit
+
 load_dotenv()
 import keras
 class ImageModel(keras.Model):
@@ -150,10 +148,77 @@ class ImageModel(keras.Model):
             
             # Add each peak's contribution to the total at the correct positions
             local_peaks_flat = local_peaks.reshape(pos_x.shape[0], -1)  # Flatten window dimensions
-            # summing local peaks to total array in parallel
-            total = total.at[global_coords[:, :, 1], global_coords[:, :, 0]].add(
-                local_peaks_flat
-            )
+            
+            # Use backend-specific optimized scatter operations for parallel processing
+            backend = keras.backend.backend()
+            
+            if backend == 'jax':
+                import jax.numpy as jnp
+                # Convert to JAX arrays for .at[] operation
+                total_jax = jnp.array(total)
+                global_coords_jax = jnp.array(global_coords)
+                local_peaks_flat_jax = jnp.array(local_peaks_flat)
+                total = total_jax.at[global_coords_jax[:, :, 1], global_coords_jax[:, :, 0]].add(
+                    local_peaks_flat_jax
+                )
+            elif backend == 'tensorflow':
+                import tensorflow as tf
+                coords_flat = global_coords.reshape(-1, 2)  # Shape: (n_peaks * window_size^2, 2)
+                values_flat = local_peaks_flat.reshape(-1)  # Shape: (n_peaks * window_size^2,)
+                valid_mask_flat = valid_mask.reshape(-1)  # Shape: (n_peaks * window_size^2,)
+                
+                valid_coords = coords_flat[valid_mask_flat]
+                valid_values = values_flat[valid_mask_flat]
+                
+                if len(valid_coords) > 0:
+                    # Convert to TensorFlow tensors with consistent dtypes
+                    total_tf = tf.convert_to_tensor(total, dtype=tf.float32)
+                    coords_tf = tf.convert_to_tensor(valid_coords, dtype=tf.int32)
+                    values_tf = tf.convert_to_tensor(valid_values, dtype=tf.float32)
+                    
+                    coords_tf = tf.stack([coords_tf[:, 1], coords_tf[:, 0]], axis=1)
+                    total = tf.tensor_scatter_nd_add(total_tf, coords_tf, values_tf)
+            elif backend == 'torch':
+                import torch
+                coords_flat = global_coords.reshape(-1, 2)
+                values_flat = local_peaks_flat.reshape(-1)
+                valid_mask_flat = valid_mask.reshape(-1)
+                
+                valid_coords = coords_flat[valid_mask_flat]
+                valid_values = values_flat[valid_mask_flat]
+                
+                if len(valid_coords) > 0:
+                    # Convert to PyTorch tensors with proper dtypes
+                    total_torch = torch.from_numpy(np.array(total, dtype=np.float32))
+                    
+                    # Convert 2D coordinates to 1D indices for scatter
+                    flat_indices = valid_coords[:, 1] * total.shape[1] + valid_coords[:, 0]
+                    indices_torch = torch.from_numpy(np.array(flat_indices, dtype=np.int64))
+                    values_torch = torch.from_numpy(np.array(valid_values, dtype=np.float32))
+                    
+                    total_flat = total_torch.flatten()
+                    total_flat.scatter_add_(0, indices_torch, values_torch)
+                    total = total_flat.reshape(total.shape).numpy()
+            else:
+                for i in range(pos_x.shape[0]):
+                    peak_global_coords = global_coords[i]  # Shape: (window_size^2, 2)
+                    peak_values = local_peaks_flat[i]  # Shape: (window_size^2,)
+                    
+                    valid_mask_i = valid_mask[i]  # Shape: (window_size^2,)
+                    valid_coords = peak_global_coords[valid_mask_i]  # Shape: (n_valid, 2)
+                    valid_values = peak_values[valid_mask_i]  # Shape: (n_valid,)
+                    
+                    if len(valid_coords) > 0:
+                        # Convert 2D coordinates to 1D indices for scatter operations
+                        flat_indices = valid_coords[:, 1] * total.shape[1] + valid_coords[:, 0]
+                        
+                        total_flat = self.ops.reshape(total, (-1,))
+                        current_values = self.ops.take(total_flat, flat_indices, axis=0)
+                        new_values = current_values + valid_values
+                        # Reshape indices for scatter_update (needs 2D indices)
+                        scatter_indices = self.ops.expand_dims(flat_indices, axis=1)
+                        total_flat = self.ops.scatter_update(total_flat, scatter_indices, new_values)
+                        total = self.ops.reshape(total_flat, total.shape)
             return total
 
     def sum(self, X, Y, pos_x, pos_y, height, width, *kargs, local=False):
