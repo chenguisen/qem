@@ -143,7 +143,7 @@ class ImageModelFitting:
         y = self.ops.arange(self.ny, dtype='float32')
         self.X, self.Y = self.ops.meshgrid(x, y)
 
-    def predict(self, params=None, use_numba=False, X=None, Y=None):
+    def predict(self, params=None, X=None, Y=None):
         """Predict the image based on current parameters.
         
         Args:
@@ -174,11 +174,11 @@ class ImageModelFitting:
             raise ValueError(f"Missing required parameters in params dict: {required_params}")
 
         # Get parameters and convert to backend tensors
-        pos_x = self.ops.convert_to_tensor(params["pos_x"], dtype='float32')
-        pos_y = self.ops.convert_to_tensor(params["pos_y"], dtype='float32')
-        height = self.ops.convert_to_tensor(params["height"], dtype='float32')
-        width = self.ops.convert_to_tensor(params["width"], dtype='float32')
-        
+        pos_x = params["pos_x"]
+        pos_y = params["pos_y"]
+        height = params["height"]
+        width = params["width"]
+
         # Handle same width for different atom types
         if self.same_width and hasattr(self, 'atom_types') and len(self.atom_types) > 0:
             if len(width.shape) > 0 and len(width) == len(np.unique(self.atom_types)):
@@ -190,7 +190,7 @@ class ImageModelFitting:
 
         # Prepare model arguments based on model type
         if isinstance(self.model, VoigtModel):
-            ratio = self.ops.convert_to_tensor(params.get("ratio", 0.9), dtype='float32')
+            ratio = params.get("ratio", 0.9)
             if self.same_width and hasattr(self, 'atom_types') and len(self.atom_types) > 0:
                 if len(ratio.shape) > 0 and len(ratio) == len(np.unique(self.atom_types)):
                     ratio = self.ops.take(ratio, self.atom_types)
@@ -455,6 +455,11 @@ class ImageModelFitting:
 
         if self.fit_background:
             params["background"] = init_background
+
+        for key in params.keys():
+            params[key] = self.ops.convert_to_tensor(
+                params[key], dtype='float32'
+            )
 
         self.params = params
         return params
@@ -1091,7 +1096,7 @@ class ImageModelFitting:
 
         self.fit_local = False
         self.converged = False
-        params = self.linear_estimator(params["pos_x"], params["pos_y"])
+        # params = self.linear_estimator(params["pos_x"], params["pos_y"])
         while self.converged is False and num_epoch > 0:
             # params = self.linear_estimator(params)
             pre_params = copy.deepcopy(params)
@@ -1110,16 +1115,16 @@ class ImageModelFitting:
                 select_params = self.select_params(params, mask)
                 try:
                     if not self.gpu_memory_limit:
-                        global_prediction = self.predict(params, use_numba=False)
-                        local_prediction = self.predict(select_params,use_numba=False)
+                        global_prediction = self.predict(params)
+                        local_prediction = self.predict(select_params)
                     else:
                         raise RuntimeError(
                             "GPU memory limit exceeded, using the fallback of local prediction."
                         )  # Explicitly raise an exception to use the fallback
                 except RuntimeError:
                     self.gpu_memory_limit = True
-                    global_prediction = self.predict(params,use_numba=False)
-                    local_prediction = self.predict(select_params,use_numba=False)
+                    global_prediction = self.predict(params)
+                    local_prediction = self.predict(select_params)
                 local_residual = global_prediction - local_prediction
                 local_target = image - local_residual
                 select_params = self.optimize(
@@ -1150,7 +1155,7 @@ class ImageModelFitting:
                     plt.show()
                     plt.pause(1.0)
         self.converged = self.convergence(params, pre_params, tol)
-        params = self.linear_estimator(params["pos_x"], params["pos_y"])
+        # params = self.linear_estimator(params["pos_x"], params["pos_y"])
         self.params = params
         self.model = self.predict(params)
         return params
