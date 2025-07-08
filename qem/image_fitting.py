@@ -253,14 +253,6 @@ class ImageFitting:
 
         # Create parameters dict for volume calculation
         params = self.params.copy()
-        if self.same_width:
-            for atom_type in self.atom_types:
-                atom_mask = self.atom_types == atom_type
-                # Expand width parameters for each peak if using same width
-                if "width" in params:
-                    params["width"][atom_mask] = np.mean(params["width"][atom_mask])
-                if "ratio" in params:
-                    params["ratio"][atom_mask] = np.mean(params["ratio"][atom_mask])
 
         return self.model.volume(params)
 
