@@ -45,8 +45,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logging.basicConfig(level=logging.INFO)
 
-
-class ImageModelFitting:
+class ImageFitting:
     def __init__(
         self,
         image: np.ndarray,
@@ -102,11 +101,11 @@ class ImageModelFitting:
         # Create model instance based on type
         try:
             if model_type.lower() == "gaussian":
-                self.model = GaussianModel(dx=dx, background=0.0, backend=backend)
+                self.model = GaussianModel(dx=dx, background=0.0)
             elif model_type.lower() == "lorentzian":
-                self.model = LorentzianModel(dx=dx, background=0.0, backend=backend)
+                self.model = LorentzianModel(dx=dx, background=0.0)
             elif model_type.lower() == "voigt":
-                self.model = VoigtModel(dx=dx, background=0.0, backend=backend)
+                self.model = VoigtModel(dx=dx, background=0.0)
             else:
                 raise ValueError(f"Model type {model_type} not supported. Use 'gaussian', 'lorentzian', or 'voigt'")
         except Exception as e:
@@ -114,11 +113,9 @@ class ImageModelFitting:
             raise
 
         # Create Gaussian kernel for filtering
-        self.kernel = GaussianKernel(backend=self.model.backend)
+        self.kernel = GaussianKernel()
 
         # Get backend modules from model
-        self.backend = self.model.backend
-        self.K = self.model.K
         self.ops = self.model.ops
 
         # Initialize missing attributes
@@ -139,23 +136,22 @@ class ImageModelFitting:
 
     def initialize_grid(self):
         """Initialize the coordinate grids for the model."""
+        self.image_tensor = self.ops.convert_to_tensor(self.image, dtype="float32")
         x = self.ops.arange(self.nx, dtype='float32')
         y = self.ops.arange(self.ny, dtype='float32')
-        self.X, self.Y = self.ops.meshgrid(x, y)
+        X, Y = self.ops.meshgrid(x, y)
+        self.X = self.ops.convert_to_tensor(X, dtype="float32")
+        self.Y = self.ops.convert_to_tensor(Y, dtype="float32")
 
     def predict(self, params=None, X=None, Y=None):
         """Predict the image based on current parameters.
         
         Args:
             params (dict, optional): Parameters to use for prediction. If None, uses self.params.
-            use_numba (bool, optional): Whether to use numba-accelerated computation. Defaults to False.
-            X (array, optional): X coordinates to evaluate at. If None, uses self.X.
-            Y (array, optional): Y coordinates to evaluate at. If None, uses self.Y.
             X (array, optional): X coordinates to evaluate at. If None, uses self.X.
             Y (array, optional): Y coordinates to evaluate at. If None, uses self.Y.
             
         Returns:
-            array: Predicted image
             array: Predicted image
         """
         if params is None:
@@ -258,11 +254,13 @@ class ImageModelFitting:
         # Create parameters dict for volume calculation
         params = self.params.copy()
         if self.same_width:
-            # Expand width parameters for each peak if using same width
-            if "width" in params:
-                params["width"] = params["width"]
-            if "ratio" in params:
-                params["ratio"] = params["ratio"]
+            for atom_type in self.atom_types:
+                atom_mask = self.atom_types == atom_type
+                # Expand width parameters for each peak if using same width
+                if "width" in params:
+                    params["width"][atom_mask] = np.mean(params["width"][atom_mask])
+                if "ratio" in params:
+                    params["ratio"][atom_mask] = np.mean(params["ratio"][atom_mask])
 
         return self.model.volume(params)
 
@@ -1018,45 +1016,32 @@ class ImageModelFitting:
         if params is None:
             params = self.params if self.params is not None else self.init_params()
 
-        def objective_fn(params_array, param_shapes, param_keys, image, X, Y):
-            # Convert 1D array back to dictionary of parameters
-            params_dict = {}
-            start = 0
-            for key, shape in zip(param_keys, param_shapes):
-                size = np.prod(shape)
-                end = start + size
-                params_dict[key] = params_array[start:end].reshape(shape)
-                start = end
-            return self.loss(params_dict, image=image, X=X, Y=Y)
+        # Use the existing optimize method which uses Keras Adam
+        # Note: The 'optimize' method was changed to use scipy. We revert it here for 'minimize'
+        optimizer = self.model.K.optimizers.Adam(learning_rate=0.01) # step_size can be a parameter
 
-        # Flatten params into a 1D array and get shapes
-        param_keys = sorted(params.keys())
-        param_shapes = [params[key].shape for key in param_keys]
-        params_flat = np.concatenate([params[key].ravel() for key in param_keys])
+        trainable_params = {k: self.model.keras.Variable(v) for k, v in params.items()}
 
-        # Define the method for minimize
-        method = (
-            "BFGS"  # Example method, you can choose others like 'CG', 'L-BFGS-B', etc.
-        )
+        prev_loss = float('inf')
+        maxiter = 1000 # Can be made a parameter
 
-        # Perform the optimization
-        res = minimize(
-            fun=objective_fn,
-            x0=params_flat,  # type: ignore
-            args=(param_shapes, param_keys, self.image, np.arange(self.nx), np.arange(self.ny)),
-            method=method,
-            tol=tol,
-        )
+        def train_step(trainable_vars):
+            with self.model.K.GradientTape() as tape:
+                loss_value = self.loss(trainable_vars, self.image_tensor, self.X, self.Y)
+            
+            grads = tape.gradient(loss_value, list(trainable_vars.values()))
+            optimizer.apply_gradients(zip(grads, list(trainable_vars.values())))
+            return loss_value
 
-        # Unflatten the parameters back into the dictionary form
-        optimized_params = {}
-        start = 0
-        for key, shape in zip(param_keys, param_shapes):
-            size = np.prod(shape)
-            end = start + size
-            optimized_params[key] = res.x[start:end].reshape(shape)
-            start = end
-        # params = self.same_width_on_atom_type(optimized_params)
+        for i in range(maxiter):
+            loss_value = train_step(trainable_params)
+
+            if abs(prev_loss - loss_value) < tol:
+                break
+            prev_loss = loss_value
+
+        optimized_params = {k: self.model.K.convert_to_numpy(v) for k, v in trainable_params.items()}
+        
         self.params = optimized_params
         self.model = self.predict(optimized_params)
         return optimized_params

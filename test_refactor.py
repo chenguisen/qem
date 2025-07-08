@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test script for the refactored ImageModelFitting class"""
+"""Test script for the refactored ImageFitting class"""
 
 import numpy as np
 import sys
@@ -24,26 +24,26 @@ def test_syntax_check():
         return False
 
 def test_image_fitting_syntax():
-    """Test ImageModelFitting syntax without running complex operations"""
+    """Test ImageFitting syntax without running complex operations"""
     try:
         import qem.image_fitting
         print("✓ qem.image_fitting imports successfully")
         
-        from qem.image_fitting import ImageModelFitting
-        print("✓ ImageModelFitting class imports successfully")
+        from qem.image_fitting import ImageFitting
+        print("✓ ImageFitting class imports successfully")
         
-        print("✓ Refactored ImageModelFitting has valid syntax")
+        print("✓ Refactored ImageFitting has valid syntax")
         return True
         
     except SyntaxError as e:
-        print(f"✗ Syntax error in ImageModelFitting: {str(e)}")
+        print(f"✗ Syntax error in ImageFitting: {str(e)}")
         return False
     except Exception as e:
-        print(f"✗ Import error in ImageModelFitting: {str(e)}")
+        print(f"✗ Import error in ImageFitting: {str(e)}")
         return False
 
 if __name__ == "__main__":
-    print("Testing refactored ImageModelFitting class syntax...")
+    print("Testing refactored ImageFitting class syntax...")
     print("=" * 50)
     
     success = True

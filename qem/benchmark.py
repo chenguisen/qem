@@ -6,7 +6,7 @@ import numpy as np
 from sklearn.ensemble import IsolationForest
 
 from qem.io import read_legacyInputStatSTEM
-from qem.image_fitting import ImageModelFitting
+from qem.image_fitting import ImageFitting
 
 
 def time_it(func):
@@ -94,7 +94,7 @@ class Benchmark:
         verbose=False,
         plot=True,
     ) -> None:
-        model = ImageModelFitting(self.image, dx=self.dx)
+        model = ImageFitting(self.image, dx=self.dx)
         model.coordinates = self.input_coordinates / self.dx
         params = model.init_params(atom_size=atom_size, guess_radius=guess_radius)
         params = model.fit_random_batch(
@@ -127,7 +127,7 @@ class Benchmark:
         plt.gca().invert_yaxis()
         plt.colorbar(im, fraction=0.046, pad=0.04)
         plt.gca().set_aspect("equal", adjustable="box")
-        plt.title("QEM refined scs ($\AA^2$)")
+        plt.title(r"QEM refined scs ($\AA^2$)")
         plt.tight_layout()
         plt.subplot(1, 3, 2)
         im = plt.scatter(
@@ -140,7 +140,7 @@ class Benchmark:
         plt.gca().invert_yaxis()
         plt.gca().set_aspect("equal", adjustable="box")
         plt.colorbar(im, fraction=0.046, pad=0.04)
-        plt.title("Voronoi refined scs ($\AA^2$)")
+        plt.title(r"Voronoi refined scs ($\AA^2$)")
         plt.tight_layout()
         plt.subplot(1, 3, 3)
         im = plt.scatter(
