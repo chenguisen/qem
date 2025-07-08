@@ -6,7 +6,7 @@ import jax
 import numpy as np
 import pytest
 
-from qem.image_fitting import ImageModelFitting
+from qem.image_fitting import ImageFitting
 from qem.model import (gaussian_sum_parallel, lorentzian_sum_parallel,
                        voigt_sum_parallel)
 
@@ -50,7 +50,7 @@ def test_gaussian_peak_fitting():
     synthetic_image += noise
     
     # Initialize image fitting
-    fitter = ImageModelFitting(
+    fitter = ImageFitting(
         image=synthetic_image,
         dx=dx,
         units="A",
@@ -161,8 +161,8 @@ def test_peak_fitting(peak_type, gen_func):
     noise_level = 0.01
     image += rng.normal(0, noise_level, image.shape)
     
-    # Initialize ImageModelFitting
-    fitter = ImageModelFitting(image=image, dx=1.0)
+    # Initialize ImageFitting
+    fitter = ImageFitting(image=image, dx=1.0)
     fitter.model_type = peak_type
     fitter.same_width = False  # Allow independent widths for each peak
     
