@@ -37,3 +37,4 @@ examples/superlattice_adf.h5
 examples/crystal_analyzer.ipynb
 examples/CTO-SRO.ipynb
 data/SRO-CTO/
+data/
