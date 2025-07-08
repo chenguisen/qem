@@ -178,14 +178,10 @@ class ImageModel(ABC):
             
             # Add each peak's contribution to the total at the correct positions
             local_peaks_flat = local_peaks.reshape(len(pos_x), -1)  # Flatten window dimensions
-            for i in range(len(pos_x)):
-                valid_points = valid_mask[i]
-                valid_coords = global_coords[i][valid_points]
-                valid_values = local_peaks_flat[i][valid_points]
-                
-                # Use scatter_add to accumulate values at valid coordinates
-                total = total.at[valid_coords[:, 1], valid_coords[:, 0]].add(valid_values)
-            
+            # summing local peaks to total array in parallel
+            total = total.at[global_coords[:, :, 1], global_coords[:, :, 0]].add(
+                local_peaks_flat
+            )
             return total
 
     def sum(self, X, Y, pos_x, pos_y, height, width, *kargs, local=False):
