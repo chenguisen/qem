@@ -11,7 +11,7 @@ import keras
 class ImageModel(keras.Model):
     """Base class for all image models."""
 
-    def __init__(self, dx=1.0, background=0.0):
+    def __init__(self, dx: float=1.0, background: float=0.0):
         """Initialize the model.
         
         Args:

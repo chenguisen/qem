@@ -114,6 +114,7 @@ class ImageFitting:
         self.coordinates_history = dict()
         self.coordinates_state = 0
         self.init_background = 0.0
+        self.prediction = np.zeros_like(self.image)
 
         # Initialize other attributes
         self.params = {}
