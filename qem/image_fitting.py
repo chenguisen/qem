@@ -995,6 +995,7 @@ class ImageFitting:
     ):
         if params is None:
             params = self.params if self.params is not None else self.init_params()
+        self._create_model(params)
         params = self.optimize(
             image = self.image_tensor, params=params, maxiter=maxiter, tol=tol, step_size=step_size, verbose=verbose
         )
