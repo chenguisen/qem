@@ -150,7 +150,7 @@ class ImageFitting:
         if params is not None:
             model.set_params(params)
         return model
-    def predict(self, params=None, X=None, Y=None,local=False, atoms_selected=None):
+    def predict(self, params=None, local=True, atoms_selected=None):
         """Predict the image based on current parameters.
         
         Args:
@@ -165,11 +165,6 @@ class ImageFitting:
             if not self.params:
                 self.init_params()
             params = self.params
-        
-        if X is None:
-            X = self.X
-        if Y is None:
-            Y = self.Y
 
         # Validate parameters
         required_params = ["pos_x", "pos_y", "height", "width"]
@@ -203,9 +198,9 @@ class ImageFitting:
                         ratio = self.ops.take(ratio, self.atom_types[atoms_selected])
                     else:
                         ratio = self.ops.take(ratio, self.atom_types)
-            prediction = self.model.sum(X, Y, pos_x, pos_y, height, width, ratio, local=local)
+            prediction = self.model.sum(self.X, self.Y, pos_x, pos_y, height, width, ratio, local=local)
         else:
-            prediction = self.model.sum(X, Y, pos_x, pos_y, height, width, local=local)
+            prediction = self.model.sum(self.X, self.Y, pos_x, pos_y, height, width, local=local)
             
         # Handle periodic boundary conditions
         if self.pbc:
@@ -213,7 +208,7 @@ class ImageFitting:
                         (1, 1), (-1, -1), (1, -1), (-1, 1)]:
                 if isinstance(self.model, VoigtModel):
                     prediction += self.model.sum(
-                        X, Y,
+                        self.X, self.Y,
                         pos_x + i * self.nx,
                         pos_y + j * self.ny,
                         height,
@@ -223,7 +218,7 @@ class ImageFitting:
                     )
                 else:
                     prediction += self.model.sum(
-                        X, Y,
+                        self.X, self.Y,
                         pos_x + i * self.nx,
                         pos_y + j * self.ny,
                         height,
@@ -243,7 +238,7 @@ class ImageFitting:
         Returns:
             numpy.ndarray: The Butterworth window used for fitting.
         """
-        return butterworth_window(self.image.shape, 0.5, 10)
+        return butterworth_window(self.image.shape, 0.5, 5)
 
     @property
     def volume(self):
@@ -891,92 +886,63 @@ class ImageFitting:
 
     # loss function and model prediction
 
-    def loss(self, params: dict, image: np.ndarray, X: np.ndarray, Y: np.ndarray):
-        # Compute the sum of the Gaussians
-        prediction = self.predict(params, X=X, Y=Y)
-        diff = image - prediction
+    def loss_val(self, params: dict):
+        prediction = self.predict(params)
+        diff = self.image_tensor - prediction
         diff = diff * self.window
         # damping the difference near the edge
         mse = self.ops.sqrt(self.ops.mean(self.ops.square(diff)))
         L1 = self.ops.mean(self.ops.abs(diff))
         return mse + L1
-
-    def residual(self, params: dict, image: np.ndarray, X: np.ndarray, Y: np.ndarray):
-        # Compute the sum of the Gaussians
-        prediction = self.predict(params, X=X, Y=Y)
-        diff = prediction - image
-        return diff
-
-    def apply_pbc(self, prediction, prediction_func, params, X, Y):
+    
+    def loss(self, image, prediction):
         """
-        Apply periodic boundary conditions to the prediction.
+        Compute the loss value between the image and the prediction.
 
         Parameters:
         -----------
-        prediction_func : function
-            The prediction function to use.
-        params : dict
-            Dictionary containing the parameters for the prediction.
-        X : np.ndarray
-            The x-coordinates for the prediction.
-        Y : np.ndarray
-            The y-coordinates for the prediction.
-        nx : int
-            Periodic boundary condition parameter in the x-direction.
-        ny : int
-            Periodic boundary condition parameter in the y-direction.
-        pbc : bool
-            Flag indicating whether to apply periodic boundary conditions.
+        image : np.ndarray
+            The original image tensor.
+        prediction : np.ndarray
+            The predicted image tensor.
 
         Returns:
         --------
-        np.ndarray
-            The prediction with periodic boundary conditions applied.
+        float
+            The computed loss value.
         """
-        for i, j in [
-            (1, 0),
-            (0, 1),
-            (-1, 0),
-            (0, -1),
-            (1, 1),
-            (-1, -1),
-            (1, -1),
-            (-1, 1),
-        ]:
-            prediction += prediction_func(
-                X,
-                Y,
-                params["pos_x"] + i * self.nx,
-                params["pos_y"] + j * self.ny,
-                params["height"],
-                params.get("width"),
-                params.get("ratio"),
-                0,
-            )
-        return prediction
+        diff = image - prediction
+        diff = diff * self.window
+        mse = self.ops.sqrt(self.ops.mean(self.ops.square(diff)))
+        L1 = self.ops.mean(self.ops.abs(diff))
+        return mse + L1
 
+    def residual(self, params: dict):
+        # Compute the sum of the Gaussians
+        prediction = self.predict(params)
+        diff = self.image_tensor - prediction
+        return diff
+    
     # fitting
 
     def optimize(
         self,
-        image: np.ndarray,
+        image_tensor: np.ndarray,
         params: dict,
-        X: np.ndarray = None,
-        Y: np.ndarray = None,
         maxiter: int = 1000,
         tol: float = 1e-4,
         step_size: float = 0.01,
         verbose: bool = False,
         batch_size: int = 1024,
-    ):
-        if X is None or Y is None:
-            X = self.X
-            Y = self.Y
+    ):# -> dict[str, NDArray[Any]] | Any:
+        if image_tensor is None:
+            image_tensor = self.image_tensor
+        
         self.model.set_params(params)
         if not self.model.built:
             self.model.build(self.model.num_coordinates)
         self.model.compile(optimizer=keras.optimizers.Adam(learning_rate=step_size),
-            loss='mean_squared_error' )
+            loss=self.loss)
         early_stopping = keras.callbacks.EarlyStopping(
             monitor='loss',
             min_delta=tol,
@@ -984,7 +950,7 @@ class ImageFitting:
             verbose=verbose,
             restore_best_weights=True
         )
-        self.model.fit([X, Y], image, epochs=maxiter, verbose=verbose, callbacks=[early_stopping], batch_size=batch_size)
+        self.model.fit([self.X, self.Y], image_tensor, epochs=maxiter, verbose=verbose, callbacks=[early_stopping], batch_size=batch_size)
         optimized_params = self.model.get_params()
         return optimized_params
 
@@ -1000,7 +966,7 @@ class ImageFitting:
             params = self.params if self.params is not None else self.init_params()
         self._create_model(params)
         params = self.optimize(
-            image = self.image_tensor, params=params, maxiter=maxiter, tol=tol, step_size=step_size, verbose=verbose
+            image_tensor=self.image_tensor, params=params, maxiter=maxiter, tol=tol, step_size=step_size, verbose=verbose
         )
         self.params = params
         self.prediction = self.predict(params)
@@ -1072,7 +1038,7 @@ class ImageFitting:
         self.converged = self.convergence(params, pre_params, tol)
         # params = self.linear_estimator(params["pos_x"], params["pos_y"])
         self.params = params
-        self.prediction = self.predict(params)
+        self.prediction = self.predict(params,local=True)
         return params
 
     def fit_voronoi(
