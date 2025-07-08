@@ -4,59 +4,15 @@ import numpy as np
 from numba import jit as njit
 from functools import partial
 from abc import ABC, abstractmethod
+
+from dotenv import load_dotenv
 import os
-import logging
-import sys
-
-
-def set_backend(backend: str):
-    """Set the Keras backend.
-
-    Args:
-        backend (str): The backend to use ('tensorflow', 'pytorch', or 'jax').
-    """
-    backend = backend.lower()
-    current_backend = os.environ.get('KERAS_BACKEND')
-
-    # If Keras is already imported, check if the backend matches
-    if 'keras' in sys.modules and current_backend:
-        if current_backend == backend:
-            logging.info(f"Keras backend is already set to '{backend}'.")
-            return backend
-        else:
-            logging.warning(
-                f"Keras is already loaded with the '{current_backend}' backend. "
-                f"To switch to '{backend}', please restart the kernel and run your script again."
-            )
-            return current_backend
-
-    # List of backends to try, with the desired one first
-    alternatives = ['tensorflow', 'pytorch', 'jax']
-    if backend in alternatives:
-        alternatives.remove(backend)
-        alternatives.insert(0, backend)
-
-    # Attempt to set and import each backend
-    for backend_choice in alternatives:
-        try:
-            os.environ['KERAS_BACKEND'] = backend_choice
-            # The import must happen *after* setting the environment variable
-            import keras
-            logging.info(f"Successfully set and initialized Keras with '{backend_choice}' backend.")
-            return backend_choice
-        except (ImportError, ModuleNotFoundError) as e:
-            logging.warning(f"Could not initialize Keras with '{backend_choice}' backend: {e}")
-
-    raise RuntimeError(
-        "Failed to initialize any Keras backend. Please ensure at least one of "
-        "'tensorflow', 'pytorch', or 'jax' is installed and configured correctly."
-    )
-
-
-class ImageModel(ABC):
+load_dotenv()
+import keras
+class ImageModel(keras.Model):
     """Base class for all image models."""
 
-    def __init__(self, dx=1.0, background=0.0, backend='jax'):
+    def __init__(self, dx=1.0, background=0.0):
         """Initialize the model.
         
         Args:
@@ -64,16 +20,35 @@ class ImageModel(ABC):
             background (float, optional): Background level. Defaults to 0.0.
             backend (str, optional): Backend to use ('tensorflow', 'pytorch', or 'jax'). Defaults to 'jax'.
         """
+        super().__init__()
         self.dx = dx
         self.background = background
+        self.ops = keras.ops
         
-        # Set and import backend
-        self.backend = set_backend(backend)
-        import keras.backend as K
-        from keras import ops
+    def set_params(self, params):
+        self.params = params
         
-        self.K = K
-        self.ops = ops
+            
+    def build(self, input_shape):
+        """Create trainable weights for the model from a params dictionary."""
+        self.w = {}
+        for key, value in params.items():
+            weight = self.add_weight(
+                name=key,
+                shape=value.shape,
+                initializer=keras.initializers.Constant(value),
+                trainable=True
+            )
+            self.w[key] = weight
+        # We call build() here with a dummy shape because some Keras layers
+        # require it, though we are managing weights manually.
+        super().build(input_shape)
+
+    def call(self, inputs):
+        """Forward pass of the model."""
+        X, Y = inputs
+        # Use the trainable weights from the dictionary for the calculation
+        return self.sum(X, Y, **self.w,local=True)
 
     @abstractmethod
     def model_fn(self, x, y, pos_x, pos_y, height, width, *args):
@@ -117,7 +92,7 @@ class ImageModel(ABC):
             return self.ops.sum(peaks, axis=-1) + self.background
         else:
             # Local calculation with parallel processing
-            width_max = np.max(width) 
+            width_max = self.ops.max(width) 
             # Window size in pixels
             window_size = int(5 * width_max)  # Fixed window size of 5*width in grid units
             if window_size % 2 == 0:
@@ -173,7 +148,7 @@ class ImageModel(ABC):
             total = self.ops.zeros_like(X) + self.background
             
             # Add each peak's contribution to the total at the correct positions
-            local_peaks_flat = local_peaks.reshape(len(pos_x), -1)  # Flatten window dimensions
+            local_peaks_flat = local_peaks.reshape(pos_x.shape[0], -1)  # Flatten window dimensions
             # summing local peaks to total array in parallel
             total = total.at[global_coords[:, :, 1], global_coords[:, :, 0]].add(
                 local_peaks_flat
@@ -333,18 +308,13 @@ class VoigtModel(ImageModel):
 class GaussianKernel:
     """Gaussian kernel implementation."""
     
-    def __init__(self, backend='jax'):
+    def __init__(self):
         """Initialize the kernel.
         
         Args:
             backend (str, optional): Backend to use ('tensorflow', 'pytorch', or 'jax'). Defaults to 'jax'.
         """
-        self.backend = set_backend(backend)
-        import keras.backend as K
-        from keras import ops
-        
-        self.K = K
-        self.ops = ops
+        self.ops = keras.ops
 
     def gaussian_kernel(self, sigma):
         """Creates a 2D Gaussian kernel with the given sigma."""
