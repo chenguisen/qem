@@ -6,55 +6,51 @@ from functools import partial
 from abc import ABC, abstractmethod
 import os
 import logging
+import sys
 
 
 def set_backend(backend: str):
     """Set the Keras backend.
-    
+
     Args:
-        backend (str): Backend to use ('tensorflow', 'pytorch', or 'jax')
-        
-    Returns:
-        str: The actually used backend
+        backend (str): The backend to use ('tensorflow', 'pytorch', or 'jax').
     """
     backend = backend.lower()
-    if backend not in ['tensorflow', 'pytorch', 'jax']:
-        raise ValueError(f"Backend {backend} not supported. Use 'tensorflow', 'pytorch', or 'jax'")
-    
-    # Try the requested backend first
-    try:
-        os.environ['KERAS_BACKEND'] = backend
-        # Import keras to test if backend works
-        import keras
-        return backend
-    except Exception as e:
-        logging.warning(f"Failed to initialize {backend} backend: {str(e)}")
-        
-        # Try alternative backends in order of preference
-        alternatives = ['jax', 'pytorch', 'tensorflow']
-        alternatives.remove(backend)  # Remove the one that just failed
-        
-        for alt_backend in alternatives:
-            try:
-                os.environ['KERAS_BACKEND'] = alt_backend
-                import keras
-                logging.info(f"Successfully switched to {alt_backend} backend")
-                return alt_backend
-            except Exception as e:
-                logging.warning(f"Failed to initialize {alt_backend} backend: {str(e)}")
-        
-        # If all backends fail, try JAX with CPU
-        if 'jax' in alternatives:
-            try:
-                os.environ['JAX_PLATFORMS'] = 'cpu'
-                os.environ['KERAS_BACKEND'] = 'jax'
-                import keras
-                logging.info("Successfully switched to JAX CPU backend")
-                return 'jax'
-            except Exception as e:
-                logging.warning(f"Failed to initialize JAX CPU backend: {str(e)}")
-        
-        raise RuntimeError("Failed to initialize any backend. Please ensure at least one of TensorFlow, PyTorch, or JAX is properly installed.")
+    current_backend = os.environ.get('KERAS_BACKEND')
+
+    # If Keras is already imported, check if the backend matches
+    if 'keras' in sys.modules and current_backend:
+        if current_backend == backend:
+            logging.info(f"Keras backend is already set to '{backend}'.")
+            return backend
+        else:
+            logging.warning(
+                f"Keras is already loaded with the '{current_backend}' backend. "
+                f"To switch to '{backend}', please restart the kernel and run your script again."
+            )
+            return current_backend
+
+    # List of backends to try, with the desired one first
+    alternatives = ['tensorflow', 'pytorch', 'jax']
+    if backend in alternatives:
+        alternatives.remove(backend)
+        alternatives.insert(0, backend)
+
+    # Attempt to set and import each backend
+    for backend_choice in alternatives:
+        try:
+            os.environ['KERAS_BACKEND'] = backend_choice
+            # The import must happen *after* setting the environment variable
+            import keras
+            logging.info(f"Successfully set and initialized Keras with '{backend_choice}' backend.")
+            return backend_choice
+        except (ImportError, ModuleNotFoundError) as e:
+            logging.warning(f"Could not initialize Keras with '{backend_choice}' backend: {e}")
+
+    raise RuntimeError(
+        "Failed to initialize any Keras backend. Please ensure at least one of "
+        "'tensorflow', 'pytorch', or 'jax' is installed and configured correctly."
+    )
 
 
 class ImageModel(ABC):
