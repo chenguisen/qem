@@ -34,6 +34,7 @@ from qem.model import (
     LorentzianModel,
     VoigtModel,
     GaussianKernel,
+    gaussian_2d_single
 )
 from qem.processing import butterworth_window
 from qem.refine import calculate_center_of_mass
@@ -947,7 +948,7 @@ class ImageFitting:
         early_stopping = keras.callbacks.EarlyStopping(
             monitor='loss',
             min_delta=tol,
-            patience=10, 
+            patience=100, 
             verbose=verbose,
             restore_best_weights=True
         )
@@ -1066,11 +1067,10 @@ class ImageFitting:
         pos_x = params["pos_x"]
         pos_y = params["pos_y"]
         coords = np.stack([pos_y, pos_x])
-        self.skip_window = True
 
         # Generate Voronoi cell map
         if max_radius is None:
-            max_radius = self.params["sigma"].max() * 3
+            max_radius = self.params["width"].max() * 3
         point_record = fast_voronoi_point_record(self.image,coords, max_radius)
 
         # Prepare per-cell fitting function
@@ -1100,19 +1100,18 @@ class ImageFitting:
             local_param['pos_x'] = np.array([params['pos_x'][index]])
             local_param['pos_y'] = np.array([params['pos_y'][index]])
             local_param['height'] = params['height'][index] - local_min
-            local_param['sigma'] = params['sigma']
+            local_param['width'] = params['width']
             local_param['background'] = np.array([0.0])
             self.fit_background = False
 
             atoms_selected = np.zeros(self.num_coordinates, dtype=bool)
             atoms_selected[index] = True
-            self.atoms_selected = atoms_selected
 
             p0 = [
                 local_param['pos_x'][0],
                 local_param['pos_y'][0],
                 local_param['height'],
-                local_param['sigma'][self.atom_types[index]],
+                local_param['width'][self.atom_types[index]],
                 local_param['background'][0],
             ]
             if border > 0:
@@ -1130,16 +1129,16 @@ class ImageFitting:
                 except Exception as e:
                     popt = p0  # fallback if fit fails
 
-            if popt[0] < 0 or popt[1] < 0:
-                popt = p0
-            if popt[0] > Xc.shape[1] or popt[1] > Yc.shape[0]:
-                popt = p0
+            # if popt[0] < 0 or popt[1] < 0:
+            #     popt = p0
+            # if popt[0] > self.image.shape[0] or popt[1] > self.image.shape[1]:
+            #     popt = p0
 
             optimized_param = {
                 'pos_x': np.array([popt[0]]),
                 'pos_y': np.array([popt[1]]),
                 'height': popt[2],
-                'sigma': popt[3],
+                'width': popt[3],
                 'background': np.array([popt[4]])
             }
             return optimized_param, index
@@ -1153,11 +1152,18 @@ class ImageFitting:
             with ThreadPoolExecutor() as executor:
                 futures = [executor.submit(fit_cell, i, current_params) for i in range(pos_x.size)]
                 for future in tqdm(as_completed(futures), total=pos_x.size, desc="Fitting cells"):
-                    optimized_param, index = future.result()
-                    current_params['pos_x'][index] = optimized_param['pos_x'][0]
-                    current_params['pos_y'][index] = optimized_param['pos_y'][0]
+                    result = future.result()
+                    if result is None:
+                        continue
+                    optimized_param, index = result
+                    if keras.backend.backend() == "jax":
+                        current_params['pos_x'] = current_params['pos_x'].at[index].set(optimized_param['pos_x'][0])
+                        current_params['pos_y'] = current_params['pos_y'].at[index].set(optimized_param['pos_y'][0])
+                    else:
+                        current_params['pos_x'][index] = optimized_param['pos_x'][0]
+                        current_params['pos_y'][index] = optimized_param['pos_y'][0]
             converged = self.convergence(current_params, pre_params, tol)
-            pre_params = current_params
+            pre_params = copy.deepcopy(current_params) 
         self.params = current_params
         # self.model = self.predict(self.params, self.X, self.Y)
         return self.params

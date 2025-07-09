@@ -368,3 +368,14 @@ class GaussianKernel:
         kernel = self.ops.expand_dims(self.ops.expand_dims(kernel, -1), -1)  # [H, W, 1, 1]
         filtered = self.ops.conv(image, kernel, padding='same')
         return self.ops.squeeze(filtered)  # Remove extra dimensions
+
+@njit
+def gaussian_2d_single(xy, pos_x, pos_y, height, width, background):
+    """2D Gaussian function for single atom."""
+    X, Y = xy
+    return (
+        height
+        * np.exp(
+            -((X[:,:,None] - pos_x) ** 2 + (Y[:,:,None] - pos_y) ** 2) / (2 * width**2)
+        ) + background
+    ).ravel()
