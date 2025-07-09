@@ -320,24 +320,6 @@ class VoigtModel(ImageModel):
         # Return weighted sum
         return height * (ratio * gaussian_part + (1 - ratio) * lorentzian_part)
 
-    def sum(self, X, Y, pos_x, pos_y, height, width, ratio, local=False):
-        """Calculate sum of peaks using Keras.
-        
-        Args:
-            X (array): X coordinates mesh
-            Y (array): Y coordinates mesh
-            pos_x (array): X positions of peaks
-            pos_y (array): Y positions of peaks
-            height (array): Heights of peaks
-            width (array): Widths of peaks
-            ratio (array): Ratios of peaks
-            local (bool, optional): If True, calculate peaks locally within a fixed window. Defaults to False.
-        
-        Returns:
-            array: Sum of all peaks plus background
-        """
-        return self._sum(X, Y, pos_x, pos_y, height, width, ratio, local=local)
-
 
 class GaussianKernel:
     """Gaussian kernel implementation."""
@@ -354,8 +336,8 @@ class GaussianKernel:
         """Creates a 2D Gaussian kernel with the given sigma."""
         size = int(4 * sigma + 0.5) * 2 + 1  # Odd size
         x = self.ops.arange(-(size // 2), (size // 2) + 1, dtype='float32')
-        X, Y = self.ops.meshgrid(x, x)
-        kernel = self.ops.exp(-(X**2 + Y**2) / (2 * sigma**2))
+        x_grid, y_grid = self.ops.meshgrid(x, x)
+        kernel = self.ops.exp(-(x_grid**2 + y_grid**2) / (2 * sigma**2))
         return kernel / self.ops.sum(kernel)
 
     def gaussian_filter(self, image, sigma):
