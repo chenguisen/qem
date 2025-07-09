@@ -39,7 +39,7 @@ from qem.model import (
 from qem.processing import butterworth_window
 from qem.refine import calculate_center_of_mass
 from qem.utils import get_random_indices_in_batches, remove_close_coordinates
-from qem.voronoi import voronoi_integrate, calculate_point_record, fast_voronoi_point_record
+from qem.voronoi import voronoi_integrate, voronoi_point_record
 from qem.region import Region, Regions
 
 from scipy.optimize import curve_fit
@@ -59,7 +59,6 @@ class ImageFitting:
         pbc: bool = False,
         fit_background: bool = True,
         gpu_memory_limit: bool = True,
-        backend: str = "jax",
     ):
         """
         Initialize the Fitting class.
@@ -84,14 +83,13 @@ class ImageFitting:
             pbc (bool, optional): Whether to use periodic boundary conditions. Defaults to False.
             fit_background (bool, optional): Whether to fit background. Defaults to True.
             gpu_memory_limit (bool, optional): Whether to use memory-efficient GPU computation. Defaults to False.
-            backend (str, optional): Backend to use ('tensorflow', 'pytorch', or 'jax'). Defaults to "jax".
         """
         if elements is None:
             elements = ["A", "B", "C"]
 
         # Store instance variables
         self.image = image
-        self.dx = dx
+        self.dx = float(dx)
         self.units = units
         self.elements = elements
         self.model_type = model_type.lower()
@@ -142,11 +140,11 @@ class ImageFitting:
         
         # Pass the full params dictionary and the specific background value
         if self.model_type == "gaussian":
-            model = GaussianModel(dx=self.dx, background=background)
+            model = GaussianModel(dx=float(self.dx), background=background)
         elif self.model_type == "lorentzian":
-            model = LorentzianModel(dx=self.dx, background=background)
+            model = LorentzianModel(dx=float(self.dx), background=background)
         elif self.model_type == "voigt":
-            model = VoigtModel(dx=self.dx, background=background)
+            model = VoigtModel(dx=float(self.dx), background=background)
         else:
             raise ValueError(f"Model type {self.model_type} not supported.")
         if params is not None:
@@ -200,33 +198,28 @@ class ImageFitting:
                         ratio = self.ops.take(ratio, self.atom_types[atoms_selected])
                     else:
                         ratio = self.ops.take(ratio, self.atom_types)
-            prediction = self.model.sum(self.X, self.Y, pos_x, pos_y, height, width, ratio, local=local)
+            params = (pos_x, pos_y, height, width, ratio)
         else:
-            prediction = self.model.sum(self.X, self.Y, pos_x, pos_y, height, width, local=local)
+            params = (pos_x, pos_y, height, width)
+        
+        # do prediction by calling the model's sum method
+        prediction = self.model.sum(
+            self.X, self.Y, *params, local=local
+        )
             
         # Handle periodic boundary conditions
         if self.pbc:
             for i, j in [(1, 0), (0, 1), (-1, 0), (0, -1), 
                         (1, 1), (-1, -1), (1, -1), (-1, 1)]:
-                if isinstance(self.model, VoigtModel):
-                    prediction += self.model.sum(
-                        self.X, self.Y,
-                        pos_x + i * self.nx,
-                        pos_y + j * self.ny,
-                        height,
-                        width,
-                        ratio,
-                        local=local
-                    )
-                else:
-                    prediction += self.model.sum(
-                        self.X, self.Y,
-                        pos_x + i * self.nx,
-                        pos_y + j * self.ny,
-                        height,
-                        width,
-                        local=local
-                    )
+                prediction += self.model.sum(
+                    self.X, self.Y,
+                    pos_x + i * self.nx,
+                    pos_y + j * self.ny,
+                    height,
+                    width,
+                    ratio if isinstance(self.model, VoigtModel) else None,
+                    local=local
+                )
 
         return prediction
 
@@ -261,18 +254,6 @@ class ImageFitting:
         return self.model.volume(params)
 
     @property
-    def num_coordinates(self):
-        return len(self._coordinates) if len(self._coordinates.shape) > 0 else 0
-
-    @property
-    def coordinates(self):
-        return self._coordinates
-
-    @coordinates.setter
-    def coordinates(self, coordinates: np.ndarray):
-        self._coordinates = coordinates
-
-    @property
     def scalebar(self):
         scalebar = ScaleBar(
             self.dx,
@@ -284,7 +265,7 @@ class ImageFitting:
         return scalebar
 
     # voronoi integration
-    def voronoi_integration(self, plot=False):
+    def voronoi_integration(self, max_radius:float = None, plot=False):
         """
         Compute the Voronoi integration of the atomic columns.
 
@@ -299,9 +280,7 @@ class ImageFitting:
             s = Signal2D(self.image - self.init_background)
         pos_x = self.params["pos_x"]
         pos_y = self.params["pos_y"]
-        try:
-            max_radius = self.params["width"].max() * 5
-        except KeyError:
+        if max_radius is None:
             max_radius = self.params["width"].max() * 5
         integrated_intensity, intensity_record, point_record = voronoi_integrate(
             s, pos_x, pos_y, max_radius=max_radius, pbc=self.pbc
@@ -312,7 +291,8 @@ class ImageFitting:
         self._voronoi_map = intensity_record
         self._voronoi_cell = point_record
         if plot:
-            intensity_record.plot(cmap="viridis")
+            plt.imshow(intensity_record, cmap="viridis")
+            plt.colorbar(label="Voronoi Integrated Intensity")
         return integrated_intensity, intensity_record, point_record
 
     # init peaks and parameters
@@ -625,59 +605,6 @@ class ImageFitting:
             self.atom_types = self.atom_types[selection_mask]
             self.coordinates = peak_positions_selected
         return selection_mask
-
-    def find_peaks(
-        self,
-        min_distance: int = 10,
-        threshold_rel: float = 0.2,
-        threshold_abs=None,
-        exclude_border: bool = False,
-        plot: bool = True,
-        region_index: int = 0,
-        sigma: float = 5,
-    ):
-        """
-        Find the peaks in the image.
-
-        Args:
-            atom_size (float, optional): The size of the atomic columns. Defaults to 1.
-            threshold_rel (float, optional): The relative threshold. Defaults to 0.2.
-            exclude_border (bool, optional): Whether to exclude the border. Defaults to False.
-            image (np.array, optional): The input image. Defaults to None.
-
-        Returns:
-            np.array: The coordinates of the peaks.
-        """
-        assert (
-            region_index in self.regions.keys
-        ), "The region index is not in the regions."
-        region_map = self.regions.region_map == region_index
-        image_filtered = gaussian_filter(self.image, sigma)
-        peaks_locations = peak_local_max(
-            image_filtered * region_map,
-            min_distance=min_distance,
-            threshold_rel=threshold_rel,
-            threshold_abs=threshold_abs,
-            exclude_border=exclude_border,
-        )
-        if self.coordinates.size > 0:
-            column_mask = self.region_column_labels == region_index
-            coordinates = np.delete(self.coordinates, np.where(column_mask), axis=0)
-            coordinates = np.vstack(
-                [coordinates, peaks_locations[:, [1, 0]].astype(float)]
-            )
-            self.coordinates = coordinates
-            atom_types = np.delete(self.atom_types, np.where(column_mask), axis=0)
-            atom_types = np.append(
-                atom_types, np.zeros(peaks_locations.shape[0], dtype=int)
-            )
-            self.atom_types = atom_types
-        else:
-            self.coordinates = peaks_locations[:, [1, 0]].astype(float)
-            self.atom_types = np.zeros(peaks_locations.shape[0], dtype=int)
-        if plot:
-            self.add_or_remove_peaks(min_distance=min_distance, image=self.image)
-        return self.coordinates
 
     def get_nearest_peak_distance(self, peak_position: np.ndarray):
         """
@@ -1071,7 +998,7 @@ class ImageFitting:
         # Generate Voronoi cell map
         if max_radius is None:
             max_radius = self.params["width"].max() * 3
-        point_record = fast_voronoi_point_record(self.image,coords, max_radius)
+        point_record = voronoi_point_record(self.image,coords, max_radius)
 
         # Prepare per-cell fitting function
         def fit_cell(index, params):
@@ -1148,6 +1075,12 @@ class ImageFitting:
         
         pre_params = copy.deepcopy(self.params)
         current_params = copy.deepcopy(self.params)
+        
+        if keras.backend.backend() == "jax":
+            # conver the params to numpy array
+            current_params = {key: self.ops.convert_to_numpy(value) for key, value in current_params.items()}
+            pre_params = {key: self.ops.convert_to_numpy(value) for key, value in pre_params.items()}
+        
         while not converged:
             with ThreadPoolExecutor() as executor:
                 futures = [executor.submit(fit_cell, i, current_params) for i in range(pos_x.size)]
@@ -1156,48 +1089,13 @@ class ImageFitting:
                     if result is None:
                         continue
                     optimized_param, index = result
-                    if keras.backend.backend() == "jax":
-                        current_params['pos_x'] = current_params['pos_x'].at[index].set(optimized_param['pos_x'][0])
-                        current_params['pos_y'] = current_params['pos_y'].at[index].set(optimized_param['pos_y'][0])
-                    else:
-                        current_params['pos_x'][index] = optimized_param['pos_x'][0]
-                        current_params['pos_y'][index] = optimized_param['pos_y'][0]
+                    current_params['pos_x'][index] = optimized_param['pos_x'][0]
+                    current_params['pos_y'][index] = optimized_param['pos_y'][0]
             converged = self.convergence(current_params, pre_params, tol)
             pre_params = copy.deepcopy(current_params) 
         self.params = current_params
         # self.model = self.predict(self.params, self.X, self.Y)
         return self.params
-
-    def voronoi_integration(self, plot=False):
-        """
-        Compute the Voronoi integration of the atomic columns.
-
-        Returns:
-            np.array: The Voronoi integration of the atomic columns.
-        """
-        if self.params is None:
-            raise ValueError("Please initialize the parameters first.")
-        if self.fit_background:
-            s = Signal2D(self.image - self.params["background"])
-        else:
-            s = Signal2D(self.image - self.init_background)
-        pos_x = self.params["pos_x"]
-        pos_y = self.params["pos_y"]
-        try:
-            max_radius = self.params["width"].max() * 5
-        except KeyError:
-            max_radius = self.params["width"].max() * 5
-        integrated_intensity, intensity_record, point_record = voronoi_integrate(
-            s, pos_x, pos_y, max_radius=max_radius, pbc=self.pbc
-        )
-        integrated_intensity = integrated_intensity * self.dx**2
-        intensity_record = intensity_record * self.dx**2
-        self._voronoi_volume = integrated_intensity
-        self._voronoi_map = intensity_record
-        self._voronoi_cell = point_record
-        if plot:
-            intensity_record.plot(cmap="viridis")
-        return integrated_intensity, intensity_record, point_record
 
     # parameters updates and convergence
     def convergence(self, params: dict, pre_params: dict, tol: float = 1e-2):
@@ -1663,7 +1561,7 @@ class ImageFitting:
         return self.regions.region_map[
             self.coordinates[:, 1].astype(int), self.coordinates[:, 0].astype(int)
         ]
-
+        
     @property
     def voronoi_volume(self):
         return self._voronoi_volume
