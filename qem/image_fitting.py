@@ -150,6 +150,7 @@ class ImageFitting:
         if params is not None:
             model.set_params(params)
         return model
+    
     def predict(self, params=None, local=True, atoms_selected=None):
         """Predict the image based on current parameters.
         
@@ -166,6 +167,8 @@ class ImageFitting:
                 self.init_params()
             params = self.params
 
+        if atoms_selected is None:
+            atoms_selected = np.arange(self.num_coordinates)
         # Validate parameters
         required_params = ["pos_x", "pos_y", "height", "width"]
         if not all(k in params for k in required_params):
@@ -176,51 +179,38 @@ class ImageFitting:
         pos_y = params["pos_y"]
         height = params["height"]
         width = params["width"]
-        
-
-        # Handle same width for different atom types
-        if self.same_width and hasattr(self, 'atom_types') and len(self.atom_types) > 0:
-            if len(width.shape) > 0 and len(width) == len(np.unique(self.atom_types)):
-                if atoms_selected is not None:
-                    width = self.ops.take(width, self.atom_types[atoms_selected])
-                else:
-                    width = self.ops.take(width, self.atom_types)
-        
-        # Update background in model
-        self.model.background = params.get("background", 0.0)
+        ratio = params.get("ratio", None)
+        background = params.get("background", self.init_background)
+        self.model.background = background
 
         # Prepare model arguments based on model type
-        if isinstance(self.model, VoigtModel):
-            ratio = params.get("ratio", 0.9)
-            if self.same_width and hasattr(self, 'atom_types') and len(self.atom_types) > 0:
-                if len(ratio.shape) > 0 and len(ratio) == len(np.unique(self.atom_types)):
-                    if atoms_selected is not None:
-                        ratio = self.ops.take(ratio, self.atom_types[atoms_selected])
-                    else:
-                        ratio = self.ops.take(ratio, self.atom_types)
-            params = (pos_x, pos_y, height, width, ratio)
+        if self.same_width and hasattr(self, 'atom_types') and len(self.atom_types) > 0:
+            width = self.ops.take(width, self.atom_types[atoms_selected])
+        if 'ratio' is not None:
+            ratio = self.ops.take(ratio, self.atom_types[atoms_selected])
+            params_tuple = (pos_x, pos_y, height, width, ratio)
         else:
-            params = (pos_x, pos_y, height, width)
+            params_tuple = (pos_x, pos_y, height, width)
         
         # do prediction by calling the model's sum method
         prediction = self.model.sum(
-            self.X, self.Y, *params, local=local
+            self.X, self.Y, *params_tuple, local=local
         )
             
         # Handle periodic boundary conditions
         if self.pbc:
             for i, j in [(1, 0), (0, 1), (-1, 0), (0, -1), 
                         (1, 1), (-1, -1), (1, -1), (-1, 1)]:
-                prediction += self.model.sum(
-                    self.X, self.Y,
-                    pos_x + i * self.nx,
-                    pos_y + j * self.ny,
-                    height,
-                    width,
-                    ratio if isinstance(self.model, VoigtModel) else None,
-                    local=local
-                )
-
+                if ratio is not None:
+                    params_tuple = (pos_x+ i * self.nx, pos_y + j * self.ny, height, width, ratio)
+                else:
+                    params_tuple = (pos_x + i * self.nx, pos_y + j * self.ny, height, width)
+                # Add the periodic boundary conditions to the prediction
+                    prediction += self.model.sum(
+                        self.X, self.Y,
+                        *params_tuple,
+                        local=local
+                    )
         return prediction
 
     # Properties
