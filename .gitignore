@@ -39,3 +39,5 @@ examples/CTO-SRO.ipynb
 data/SRO-CTO/
 data/
 .env
+data/ETO_KTO/
+data/STO/
