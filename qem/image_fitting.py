@@ -1,10 +1,9 @@
 # Standard library imports
-# Standard library imports
 import copy
 import logging
 import warnings
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Third-party imports
 # Third-party imports
 import matplotlib.pyplot as plt
 import numpy as np
@@ -18,10 +17,10 @@ from scipy.optimize import lsq_linear, minimize
 from scipy.sparse import coo_matrix
 from scipy.sparse.linalg import spsolve
 from skimage.feature.peak import peak_local_max
+from scipy.optimize import curve_fit
 from tqdm import tqdm
 import keras
 
-# Local imports
 # Local imports
 from qem.crystal_analyzer import CrystalAnalyzer
 from qem.gui_classes import (
@@ -42,8 +41,7 @@ from qem.utils import get_random_indices_in_batches, remove_close_coordinates
 from qem.voronoi import voronoi_integrate, voronoi_point_record
 from qem.region import Region, Regions
 
-from scipy.optimize import curve_fit
-from concurrent.futures import ThreadPoolExecutor, as_completed
+
 
 logging.basicConfig(level=logging.INFO)
 
@@ -612,67 +610,84 @@ class ImageFitting:
         )
         distances = np.linalg.norm(other_peaks - peak_position, axis=1).min()
         return distances
-
-    def refine_center_of_mass(self, percent_to_nn: float = 0.4, plot=False):
-        # do center of mass for each atom
-        pre_coordinates = self.coordinates
-        current_coordinates = self.coordinates
+    
+    def refine_center_of_mass(self, params = None, plot=False):
+        # Refine center of mass for each Voronoi cell
+        pre_coordinates = self.coordinates.copy()
+        current_coordinates = self.coordinates.copy()
         converged = False
-        while converged is False:
-            for i in tqdm(range(self.num_coordinates)):
-                x, y = pre_coordinates[i]
-                windows_size = self.get_nearest_peak_distance(pre_coordinates[i])
-                mask_size = int(windows_size * percent_to_nn)
 
-                # calculate the mask for distance < r
-                top, bottom = (
-                    int(max(int(y) - windows_size, 0)),
-                    int(min(int(y) + windows_size + 1, self.ny)),
-                )
-                left, right = (
-                    int(max(int(x) - windows_size, 0)),
-                    int(min(int(x) + windows_size + 1, self.nx)),
-                )
+        if params is None and hasattr(self, 'params') and len(self.params)>0:
+            params = self.params
+        elif params is None:
+            params = self.init_params()
+        while not converged:
+            # Generate Voronoi cell map
+            coords = np.stack([pre_coordinates[:, 1], pre_coordinates[:, 0]])  # (y, x)
+            max_radius = params["width"].max() * 5
+            point_record = voronoi_point_record(self.image, coords, max_radius)
 
-                cetre_x, cetre_y = int(x) - left, int(y) - top
+           
 
-                region = self.image[
-                    top:bottom,
-                    left:right,
+            # In refine_center_of_mass, replace the for-loop with:
+            with ThreadPoolExecutor() as executor:
+                futures = [
+                    executor.submit(self._refine_one_center, i, point_record, plot)
+                    for i in range(self.num_coordinates)
                 ]
-                if region.size == 0:
-                    continue
-                region = (region - region.min()) / (region.max() - region.min())
-                # region = gaussian_filter(region, 5)
+                for future in tqdm(as_completed(futures), total=self.num_coordinates, desc="Refining center of mass"):
+                    result, i = future.result()
+                    if result is not None:
+                        current_coordinates[i] = result
 
-                # create a mask with radius r for region
-                mask = np.zeros_like(region)
-                grid_y, grid_x = np.mgrid[0: region.shape[0], 0: region.shape[1]]
-                mask[
-                    (grid_x - cetre_x) ** 2 + (grid_y - cetre_y) ** 2 < mask_size**2
-                ] = 1
+            converged = np.abs(current_coordinates - pre_coordinates).mean() < 0.5
+            pre_coordinates = current_coordinates.copy()
+        params["pos_x"] = current_coordinates[:, 0]
+        params["pos_y"] = current_coordinates[:, 1]
+        self.params = params
+        self.coordinates = current_coordinates
+        return params
 
-                region = region * mask
+    def _refine_one_center(self, i: int, point_record: np.ndarray, plot: bool = False):
+        mask = point_record == (i + 1)
+        if not np.any(mask):
+            return None, i
 
-                local_y, local_x = calculate_center_of_mass(region)
-                assert isinstance(local_x, float), "local_x is not a float"
-                assert isinstance(local_y, float), "local_y is not a float"
-                current_coordinates[i] = np.array(
-                    [
-                        int(x) - cetre_x + local_x,
-                        int(y) - cetre_y + local_y,
-                    ],
-                    dtype=float,
-                )
-                if plot:
-                    plt.clf()
-                    plt.imshow(region, cmap="gray")
-                    plt.scatter(local_x, local_y, color="red", s=2, label="refined")
-                    plt.scatter(cetre_x, cetre_y, color="blue", s=2, label="initial")
-                    plt.legend()
-                    plt.pause(1.0)
-            converged = np.abs(current_coordinates - pre_coordinates).max() < 0.5
-        return current_coordinates
+        cell_img = self.image * mask
+        ys, xs = np.where(mask)
+        y0, y1 = ys.min(), ys.max() + 1
+        x0, x1 = xs.min(), xs.max() + 1
+        cropped_img = cell_img[y0:y1, x0:x1]
+        cropped_mask = mask[y0:y1, x0:x1]
+
+        # Subtract local min (only over masked region)
+        local_min = cropped_img[cropped_mask].min()
+        cropped_img = cropped_img - local_min
+        cropped_img[~cropped_mask] = 0
+
+        # Normalize for center of mass
+        if cropped_img[cropped_mask].max() > 0:
+            norm_img = (cropped_img - cropped_img[cropped_mask].min()) / (cropped_img[cropped_mask].max() - cropped_img[cropped_mask].min())
+        else:
+            norm_img = cropped_img
+        norm_img[~cropped_mask] = 0
+
+        # Compute center of mass in the cropped region
+        local_y, local_x = calculate_center_of_mass(norm_img)
+        assert isinstance(local_x, float), "local_x is not a float"
+        assert isinstance(local_y, float), "local_y is not a float"
+        result = np.array([
+            x0 + local_x,
+            y0 + local_y,
+        ], dtype=float)
+
+        if plot:
+            plt.clf()
+            plt.imshow(norm_img, cmap="gray")
+            plt.scatter(local_x, local_y, color="red", s=2, label="refined")
+            plt.legend()
+            plt.pause(1.0)
+        return result, i
 
     def refine_local_max(
         self,
@@ -718,7 +733,6 @@ class ImageFitting:
                     s=1,
                 )
                 plt.scatter(x, y, color="red", s=2)
-                plt.gca().set_aspect("equal", adjustable="box")
                 plt.subplot(1, 2, 2)
                 plt.imshow(region, cmap="gray")
                 plt.scatter(
