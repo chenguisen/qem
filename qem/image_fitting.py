@@ -3,26 +3,24 @@ import copy
 import logging
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any
 
-# Third-party imports
+# Third-party library imports
+import keras
 import matplotlib.pyplot as plt
 import numpy as np
-from ase import Atoms
-from ase.visualize import view
-from hyperspy._signals.signal2d import Signal2D
-from matplotlib.path import Path
+from hyperspy.signals import Signal2D
+from keras import ops
 from matplotlib_scalebar.scalebar import ScaleBar
-from scipy.ndimage import gaussian_filter
-from scipy.optimize import lsq_linear, minimize
+from numpy.typing import NDArray
+from scipy.optimize import curve_fit, lsq_linear
 from scipy.sparse import coo_matrix
 from scipy.sparse.linalg import spsolve
-from skimage.feature.peak import peak_local_max
-from scipy.optimize import curve_fit
+from skimage.feature import peak_local_max
+from scipy.ndimage import gaussian_filter
 from tqdm import tqdm
-import keras
-from keras import ops
 
-# Local imports
+# Application-specific imports
 from qem.crystal_analyzer import CrystalAnalyzer
 from qem.gui_classes import (
     GetAtomSelection,
@@ -30,17 +28,17 @@ from qem.gui_classes import (
     InteractivePlot,
 )
 from qem.model import (
+    GaussianKernel,
     GaussianModel,
     LorentzianModel,
     VoigtModel,
-    GaussianKernel,
-    gaussian_2d_single
+    gaussian_2d_single,
 )
 from qem.processing import butterworth_window
 from qem.refine import calculate_center_of_mass
+from qem.region import Regions
 from qem.utils import get_random_indices_in_batches, remove_close_coordinates
 from qem.voronoi import voronoi_integrate, voronoi_point_record
-from qem.region import Region, Regions
 
 
 
@@ -72,16 +70,6 @@ class ImageFitting:
             pbc (bool, optional): Whether to use periodic boundary conditions. Defaults to False.
             fit_background (bool, optional): Whether to fit background. Defaults to True.
             gpu_memory_limit (bool, optional): Whether to use memory-efficient GPU computation. Defaults to False.
-            backend (str, optional): Backend to use ('tensorflow', 'pytorch', or 'jax'). Defaults to "jax".
-            image (np.array): The input image as a numpy array.
-            dx (float, optional): The size of each pixel. Defaults to 1.
-            units (str, optional): The units of the image. Defaults to "A".
-            elements (list[str], optional): The elements in the image. Defaults to None. If None, the elements are ["Sr", "Ti", "O"].
-            model_type (str, optional): Type of model to use. Defaults to "gaussian".
-            same_width (bool, optional): Whether to use same width for all peaks. Defaults to True.
-            pbc (bool, optional): Whether to use periodic boundary conditions. Defaults to False.
-            fit_background (bool, optional): Whether to fit background. Defaults to True.
-            gpu_memory_limit (bool, optional): Whether to use memory-efficient GPU computation. Defaults to False.
         """
         if elements is None:
             elements = ["A", "B", "C"]
@@ -96,6 +84,7 @@ class ImageFitting:
         self.pbc = pbc
         self.fit_background = fit_background
         self.gpu_memory_limit = gpu_memory_limit
+        self.backend = keras.backend.backend()
 
         # Create model instance based on type
         self.model = self._create_model()
@@ -124,9 +113,9 @@ class ImageFitting:
         self.image_tensor = ops.convert_to_tensor(self.image, dtype="float32")
         x = ops.arange(self.nx, dtype='float32')
         y = ops.arange(self.ny, dtype='float32')
-        X, Y = ops.meshgrid(x, y)
-        self.X = ops.convert_to_tensor(X, dtype="float32")
-        self.Y = ops.convert_to_tensor(Y, dtype="float32")
+        x_grid, y_grid = ops.meshgrid(x, y)
+        self.x_grid = ops.convert_to_tensor(x_grid, dtype="float32")
+        self.y_grid = ops.convert_to_tensor(y_grid, dtype="float32")
 
     def _create_model(self, params=None):
         """Create a new model instance based on the model type."""
@@ -134,7 +123,6 @@ class ImageFitting:
             background = 0.0
         else:
             background = params.get("background", 0.0)
-        
         # Pass the full params dictionary and the specific background value
         if self.model_type == "gaussian":
             model = GaussianModel(dx=float(self.dx), background=background)
@@ -151,13 +139,11 @@ class ImageFitting:
     
     def predict(self, params=None, local=True, atoms_selected=None):
         """Predict the image based on current parameters.
-        
         Args:
             params (dict, optional): Parameters to use for prediction. If None, uses self.params.
-            X (array, optional): X coordinates to evaluate at. If None, uses self.X.
-            Y (array, optional): Y coordinates to evaluate at. If None, uses self.Y.
-            
-        Returns:
+            X (array, optional): X coordinates to evaluate at. If None, uses self.x_grid.
+            Y (array, optional): Y coordinates to evaluate at. If None, uses self.y_grid.
+            Returns:
             array: Predicted image
         """
         if params is None:
@@ -189,13 +175,11 @@ class ImageFitting:
             params_tuple = (pos_x, pos_y, height, width, ratio)
         else:
             params_tuple = (pos_x, pos_y, height, width)
-        
         # do prediction by calling the model's sum method
         prediction = self.model.sum(
-            self.X, self.Y, *params_tuple, local=local
+            self.x_grid, self.y_grid, *params_tuple, local=local
         )
-            
-        # Handle periodic boundary conditions
+            # Handle periodic boundary conditions
         if self.pbc:
             for i, j in [(1, 0), (0, 1), (-1, 0), (0, -1), 
                         (1, 1), (-1, -1), (1, -1), (-1, 1)]:
@@ -205,7 +189,7 @@ class ImageFitting:
                     params_tuple = (pos_x + i * self.nx, pos_y + j * self.ny, height, width)
                 # Add the periodic boundary conditions to the prediction
                     prediction += self.model.sum(
-                        self.X, self.Y,
+                        self.x_grid, self.y_grid,
                         *params_tuple,
                         local=local
                     )
@@ -518,7 +502,6 @@ class ImageFitting:
             AtomicColumns: The atomic columns mapped from the CIF file.
         """
         # find the column within the region_index
-        
         column_mask = self.region_column_labels == region_index
         region_mask = self.regions.region_map == region_index
 
@@ -633,8 +616,7 @@ class ImageFitting:
             max_radius = params["width"].max() * 5
             point_record = voronoi_point_record(self.image, coords, max_radius)
 
-           
-
+   
             # In refine_center_of_mass, replace the for-loop with:
             with ThreadPoolExecutor() as executor:
                 futures = [
@@ -874,19 +856,16 @@ class ImageFitting:
         width = params["width"]
         height = params["height"]
         ratio = params.get('ratio',None)
-        
         if self.same_width:
             width = width[self.atom_types]
             if ratio is not None:
                 ratio = ratio[self.atom_types]
-        
         # if (height < 0).any():
         #     logging.warning(
         #         "The height has negative values, the linear estimator is not valid, I will make it to zero but be careful with the results."
         #     )
         #     height[height < 0] = 0
-            
-
+    
 
         # Vectorized implementation using keras.ops
         window_size = ops.cast(ops.max(width) * 5, dtype="int32")
@@ -927,9 +906,8 @@ class ImageFitting:
         cols_tensor = valid_indices[2]
 
         rows_tensor = ops.cast(global_Y_valid, 'int32') * self.nx + ops.cast(global_X_valid, 'int32')
-        
         if self.fit_background:
-            background_rows = ops.reshape(self.Y, (-1,)) * self.nx + ops.reshape(self.X, (-1,))
+            background_rows = ops.reshape(self.y_grid, (-1,)) * self.nx + ops.reshape(self.x_grid, (-1,))
             rows_tensor = ops.concatenate([rows_tensor, ops.cast(background_rows, 'int32')])
             cols_tensor = ops.concatenate([cols_tensor, ops.full((self.nx * self.ny,), self.num_coordinates, dtype='int32')])
             data_tensor = ops.concatenate([data_tensor, ops.ones((self.nx * self.ny,), dtype='float32')])
@@ -1012,11 +990,10 @@ class ImageFitting:
         step_size: float = 0.01,
         verbose: bool = False,
         batch_size: int = 1024,
-    ):# -> dict[str, NDArray[Any]] | Any:
+    ) -> dict[str, NDArray[Any]] | Any:
         if image_tensor is None:
             image_tensor = self.image_tensor
-        
-        self.model.set_params(params)        
+        self.model.set_params(params)
         self.model.compile(optimizer=keras.optimizers.Adam(learning_rate=step_size),
             loss=self.loss)
         early_stopping = keras.callbacks.EarlyStopping(
@@ -1026,7 +1003,7 @@ class ImageFitting:
             verbose=verbose,
             restore_best_weights=True
         )
-        self.model.fit([self.X, self.Y], image_tensor, epochs=maxiter, verbose=verbose, callbacks=[early_stopping], batch_size=batch_size)
+        self.model.fit([self.x_grid, self.y_grid], image_tensor, epochs=maxiter, verbose=verbose, callbacks=[early_stopping], batch_size=batch_size)
         optimized_params = self.model.get_params()
         return optimized_params
 
@@ -1195,9 +1172,8 @@ class ImageFitting:
                 local_param['width'][self.atom_types[index]],
                 local_param['background'][0],
             ]
-            if border > 0:
-                if pos_x.min() < border or pos_x.max() > self.nx - border or pos_y.min() < border or pos_y.max() > self.ny - border:
-                    popt = p0                    
+            if border > 0 and (pos_x.min() < border or pos_x.max() > self.nx - border or pos_y.min() < border or pos_y.max() > self.ny - border):
+                popt = p0
             else:
                 try:
                     popt, _ = curve_fit(  # pylint: disable=unbalanced-tuple-unpacking
@@ -1226,15 +1202,12 @@ class ImageFitting:
 
         # Parallel execution (using jax.vmap or plain Python for now)
         converged = False
-        
         pre_params = copy.deepcopy(self.params)
         current_params = copy.deepcopy(self.params)
-        
         if keras.backend.backend() == "jax":
             # conver the params to numpy array
             current_params = {key: ops.convert_to_numpy(value) for key, value in current_params.items()}
             pre_params = {key: ops.convert_to_numpy(value) for key, value in pre_params.items()}
-        
         while not converged:
             with ThreadPoolExecutor() as executor:
                 futures = [executor.submit(fit_cell, i, current_params) for i in range(pos_x.size)]
@@ -1248,7 +1221,7 @@ class ImageFitting:
             converged = self.convergence(current_params, pre_params, tol)
             pre_params = copy.deepcopy(current_params) 
         self.params = current_params
-        # self.model = self.predict(self.params, self.X, self.Y)
+        # self.model = self.predict(self.params, self.x_grid, self.y_grid)
         return self.params
 
     # parameters updates and convergence
@@ -1715,7 +1688,6 @@ class ImageFitting:
         return self.regions.region_map[
             self.coordinates[:, 1].astype(int), self.coordinates[:, 0].astype(int)
         ]
-        
     @property
     def voronoi_volume(self):
         return self._voronoi_volume

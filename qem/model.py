@@ -48,8 +48,8 @@ class ImageModel(keras.Model):
 
     def call(self, inputs):
         """Forward pass of the model."""
-        X, Y = inputs
-        return self.sum(X, Y, self.pos_x, self.pos_y, self.height, self.width)
+        x_grid, y_grid = inputs
+        return self.sum(x_grid, y_grid, self.pos_x, self.pos_y, self.height, self.width)
 
     @abstractmethod
     def model_fn(self, x, y, pos_x, pos_y, height, width, *args):
@@ -66,14 +66,14 @@ class ImageModel(keras.Model):
         """Calculate the volume of each peak."""
         pass
 
-    def _sum(self, X, Y, pos_x, pos_y, height, width, *kargs, local=False):
+    def _sum(self, x_grid, y_grid, pos_x, pos_y, height, width, *kargs, local=False):
         """Calculate all peaks either globally or locally.
         
         Args:
-            X (array): X coordinates mesh
-            Y (array): Y coordinates mesh
-            pos_x (array): X positions of peaks in the same coordinate space as X
-            pos_y (array): Y positions of peaks in the same coordinate space as Y
+            x_grid (array): x_grid coordinates mesh
+            y_grid (array): y_grid coordinates mesh
+            pos_x (array): x_grid positions of peaks in the same coordinate space as x_grid
+            pos_y (array): y_grid positions of peaks in the same coordinate space as y_grid
             height (array): Heights of peaks
             width (array): Widths of peaks
             *args: Additional arguments for specific peak models
@@ -85,7 +85,7 @@ class ImageModel(keras.Model):
         if not local:
             # Calculate all peaks at once and sum them
             peaks = self.model_fn(
-                X[:, :, None], Y[:, :, None],
+                x_grid[:, :, None], y_grid[:, :, None],
                 pos_x[None, None, :], pos_y[None, None, :],
                 height, width, *kargs
             )
@@ -103,19 +103,19 @@ class ImageModel(keras.Model):
             # Create fixed-size local window coordinates
             window_x = ops.arange(-half_size, half_size + 1)
             window_y = ops.arange(-half_size, half_size + 1)
-            window_X, window_Y = ops.meshgrid(window_x, window_y)
+            window_x_grid, window_y_grid = ops.meshgrid(window_x, window_y)
             
             # Calculate all local peaks in parallel
             # Reshape window coordinates to (window_size^2, 2) for broadcasting
-            window_coords = ops.stack([window_X.flatten(), window_Y.flatten()], axis=-1)
+            window_coords = ops.stack([window_x_grid.flatten(), window_y_grid.flatten()], axis=-1)
             
             # Calculate global indices for each peak
             x_indices = ops.cast(
-                ops.round((pos_x - X[0, 0])),
+                ops.round((pos_x - x_grid[0, 0])),
                 dtype='int32'
             )
             y_indices = ops.cast(
-                ops.round((pos_y - Y[0, 0])),
+                ops.round((pos_y - y_grid[0, 0])),
                 dtype='int32'
             )
             
@@ -129,14 +129,14 @@ class ImageModel(keras.Model):
             global_coords = peak_centers + window_offsets
             
             # Calculate valid mask for points within image bounds
-            valid_x = (global_coords[..., 0] >= 0) & (global_coords[..., 0] < X.shape[1])
-            valid_y = (global_coords[..., 1] >= 0) & (global_coords[..., 1] < X.shape[0])
+            valid_x = (global_coords[..., 0] >= 0) & (global_coords[..., 0] < x_grid.shape[1])
+            valid_y = (global_coords[..., 1] >= 0) & (global_coords[..., 1] < x_grid.shape[0])
             valid_mask = valid_x & valid_y
             
             # Calculate local peaks using model_fn on window coordinates
             local_peaks = self.model_fn(
-                window_X[None, :, :],  # Shape: (1, window_size, window_size)
-                window_Y[None, :, :],  # Shape: (1, window_size, window_size)
+                window_x_grid[None, :, :],  # Shape: (1, window_size, window_size)
+                window_y_grid[None, :, :],  # Shape: (1, window_size, window_size)
                 ops.zeros_like(pos_x)[:, None, None],  # Center each peak at (0,0)
                 ops.zeros_like(pos_y)[:, None, None],
                 height[:, None, None],
@@ -145,7 +145,7 @@ class ImageModel(keras.Model):
             )
             
             # Initialize output array with background
-            total = ops.zeros_like(X) + self.background
+            total = ops.zeros_like(x_grid) + self.background
             
             # Add each peak's contribution to the total at the correct positions
             local_peaks_flat = local_peaks.reshape(pos_x.shape[0], -1)  # Flatten window dimensions
@@ -172,7 +172,7 @@ class ImageModel(keras.Model):
                 coords_tf = tf.stack([valid_coords[:, 1], valid_coords[:, 0]], axis=1)
                 total = tf.tensor_scatter_nd_add(total_flat, coords_tf, values_tf)
             elif backend == 'torch':
-                import torch
+    
                 # Convert 2D coordinates to 1D indices for scatter
                 indices = (valid_coords[:, 1] * total.shape[1] + valid_coords[:, 0]).long()
                 
@@ -187,14 +187,14 @@ class ImageModel(keras.Model):
                 total = total_jax.at[global_coords_jax[:, 1], global_coords_jax[:, 0]].add(valid_values_jax)
             return total
 
-    def sum(self, X, Y, pos_x, pos_y, height, width, *kargs, local=False):
+    def sum(self, x_grid, y_grid, pos_x, pos_y, height, width, *kargs, local=False):
         """Calculate sum of peaks using Keras.
         
         Args:
-            X (array): X coordinates mesh
-            Y (array): Y coordinates mesh
-            pos_x (array): X positions of peaks
-            pos_y (array): Y positions of peaks
+            x_grid (array): x_grid coordinates mesh
+            y_grid (array): y_grid coordinates mesh
+            pos_x (array): x_grid positions of peaks
+            pos_y (array): y_grid positions of peaks
             height (array): Heights of peaks
             width (array): Widths of peaks
             *args: Additional arguments for specific peak models
@@ -203,7 +203,7 @@ class ImageModel(keras.Model):
         Returns:
             array: Sum of all peaks plus background
         """
-        return self._sum(X, Y, pos_x, pos_y, height, width, *kargs, local=local)
+        return self._sum(x_grid, y_grid, pos_x, pos_y, height, width, *kargs, local=local)
 
 class GaussianModel(ImageModel):
     """Gaussian peak model."""
@@ -309,10 +309,10 @@ class GaussianKernel:
 @njit
 def gaussian_2d_single(xy, pos_x, pos_y, height, width, background):
     """2D Gaussian function for single atom."""
-    X, Y = xy
+    x_grid, y_grid = xy
     return (
         height
         * np.exp(
-            -((X[:,:,None] - pos_x) ** 2 + (Y[:,:,None] - pos_y) ** 2) / (2 * width**2)
+            -((x_grid[:,:,None] - pos_x) ** 2 + (y_grid[:,:,None] - pos_y) ** 2) / (2 * width**2)
         ) + background
     ).ravel()
