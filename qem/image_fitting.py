@@ -141,9 +141,9 @@ class ImageFitting:
         """Predict the image based on current parameters.
         Args:
             params (dict, optional): Parameters to use for prediction. If None, uses self.params.
-            X (array, optional): X coordinates to evaluate at. If None, uses self.x_grid.
-            Y (array, optional): Y coordinates to evaluate at. If None, uses self.y_grid.
-            Returns:
+            local (bool, optional): If True, calculate peaks locally within a fixed window. Defaults to False.
+            atoms_selected (array, optional): Indices of atoms to include in the prediction. If None, uses all atoms.
+        Returns:
             array: Predicted image
         """
         if params is None:
@@ -871,21 +871,21 @@ class ImageFitting:
         window_size = ops.cast(ops.max(width) * 5, dtype="int32")
         x = ops.arange(-window_size, window_size + 1, 1, dtype='float32')
         y = ops.arange(-window_size, window_size + 1, 1, dtype='float32')
-        local_X, local_Y = ops.meshgrid(x, y, indexing="xy")
+        local_x, local_y = ops.meshgrid(x, y, indexing="xy")
 
         input_params = (ops.mod(pos_x, 1), ops.mod(pos_y, 1), height, width)
         if ratio is not None:
             input_params += (ratio,)
 
-        peak_local = self.model.model_fn(local_X[..., None], local_Y[..., None], *input_params)
+        peak_local = self.model.model_fn(local_x[..., None], local_y[..., None], *input_params)
 
         pos_x_int = ops.floor(pos_x)
         pos_y_int = ops.floor(pos_y)
 
-        global_X = ops.expand_dims(local_X, -1) + pos_x_int
-        global_Y = ops.expand_dims(local_Y, -1) + pos_y_int
+        global_x = ops.expand_dims(local_x, -1) + pos_x_int
+        global_y = ops.expand_dims(local_y, -1) + pos_y_int
 
-        mask = (global_X >= 0) & (global_X < self.nx) & (global_Y >= 0) & (global_Y < self.ny)
+        mask = (global_x >= 0) & (global_x < self.nx) & (global_y >= 0) & (global_y < self.ny)
 
         # Get the indices of valid elements where the mask is True.
         valid_indices = ops.where(mask)
@@ -899,13 +899,13 @@ class ImageFitting:
 
         # Gather the valid data from the flattened tensors using the 1D indices.
         data_tensor = ops.take(ops.reshape(peak_local, (-1,)), flat_indices)
-        global_X_valid = ops.take(ops.reshape(global_X, (-1,)), flat_indices)
-        global_Y_valid = ops.take(ops.reshape(global_Y, (-1,)), flat_indices)
+        global_x_valid = ops.take(ops.reshape(global_x, (-1,)), flat_indices)
+        global_y_valid = ops.take(ops.reshape(global_y, (-1,)), flat_indices)
 
         # The column indices correspond to the third dimension of the original tensors.
         cols_tensor = valid_indices[2]
 
-        rows_tensor = ops.cast(global_Y_valid, 'int32') * self.nx + ops.cast(global_X_valid, 'int32')
+        rows_tensor = ops.cast(global_y_valid, 'int32') * self.nx + ops.cast(global_x_valid, 'int32')
         if self.fit_background:
             background_rows = ops.reshape(self.y_grid, (-1,)) * self.nx + ops.reshape(self.x_grid, (-1,))
             rows_tensor = ops.concatenate([rows_tensor, ops.cast(background_rows, 'int32')])
@@ -1052,7 +1052,7 @@ class ImageFitting:
             random_batches = get_random_indices_in_batches(
                 self.num_coordinates, batch_size
             )
-            image = self.image
+            image = self.image_tensor
 
 
             for index in tqdm(random_batches, desc="Fitting random batch"):
@@ -1157,7 +1157,9 @@ class ImageFitting:
             cropped_img[~cropped_mask] = 0
 
             # Prepare grid for fitting
-            Xc, Yc = np.meshgrid(np.arange(x0, x1), np.arange(y0, y1), indexing="xy")
+            x_c, y_c = ops.meshgrid(ops.arange(x0, x1), ops.arange(y0, y1), indexing="xy")
+            x_c = ops.convert_to_numpy(x_c)
+            y_c = ops.convert_to_numpy(y_c)
 
             # Prepare initial params for this cell
             local_param = {}
@@ -1184,7 +1186,7 @@ class ImageFitting:
                 try:
                     popt, _ = curve_fit(  # pylint: disable=unbalanced-tuple-unpacking
                         gaussian_2d_single,
-                        (Xc, Yc),
+                        (x_c, y_c),
                         cropped_img.ravel(),
                         p0=p0,
                         maxfev=2000
