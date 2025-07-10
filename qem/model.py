@@ -56,10 +56,6 @@ class ImageModel(keras.Model):
         """Core model function that defines the peak shape."""
         pass
 
-    @abstractmethod
-    def model_fn_numba(x, y, pos_x, pos_y, height, width, *args):
-        """Numba version of the model function."""
-        pass
 
     @abstractmethod
     def volume(self, params: dict) -> np.ndarray:
