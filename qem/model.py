@@ -8,6 +8,7 @@ from numba import jit as njit
 
 load_dotenv()
 import keras
+from keras import ops
 class ImageModel(keras.Model):
     """Base class for all image models."""
 
@@ -21,10 +22,10 @@ class ImageModel(keras.Model):
         super().__init__()
         self.dx = dx
         self.background = background
-        self.ops = keras.ops
+        ops = keras.ops
             
     def set_params(self, params):
-        self.initial_params = {k: self.ops.convert_to_tensor(v) for k, v in params.items()}
+        self.initial_params = {k: ops.convert_to_tensor(v) for k, v in params.items()}
         self.num_coordinates = self.initial_params['pos_x'].shape[0]
         
     def build(self, input_shape):
@@ -88,10 +89,10 @@ class ImageModel(keras.Model):
                 pos_x[None, None, :], pos_y[None, None, :],
                 height, width, *kargs
             )
-            return self.ops.sum(peaks, axis=-1) + self.background
+            return ops.sum(peaks, axis=-1) + self.background
         else:
             # Local calculation with parallel processing
-            width_max = self.ops.max(width) 
+            width_max = ops.max(width) 
             # Window size in pixels
             window_size = int(5 * width_max)  # Fixed window size of 5*width in grid units
             if window_size % 2 == 0:
@@ -100,26 +101,26 @@ class ImageModel(keras.Model):
             half_size = window_size // 2
             
             # Create fixed-size local window coordinates
-            window_x = self.ops.arange(-half_size, half_size + 1)
-            window_y = self.ops.arange(-half_size, half_size + 1)
-            window_X, window_Y = self.ops.meshgrid(window_x, window_y)
+            window_x = ops.arange(-half_size, half_size + 1)
+            window_y = ops.arange(-half_size, half_size + 1)
+            window_X, window_Y = ops.meshgrid(window_x, window_y)
             
             # Calculate all local peaks in parallel
             # Reshape window coordinates to (window_size^2, 2) for broadcasting
-            window_coords = self.ops.stack([window_X.flatten(), window_Y.flatten()], axis=-1)
+            window_coords = ops.stack([window_X.flatten(), window_Y.flatten()], axis=-1)
             
             # Calculate global indices for each peak
-            x_indices = self.ops.cast(
-                self.ops.round((pos_x - X[0, 0])),
+            x_indices = ops.cast(
+                ops.round((pos_x - X[0, 0])),
                 dtype='int32'
             )
-            y_indices = self.ops.cast(
-                self.ops.round((pos_y - Y[0, 0])),
+            y_indices = ops.cast(
+                ops.round((pos_y - Y[0, 0])),
                 dtype='int32'
             )
             
             # Calculate actual coordinates for each window point relative to peak centers
-            peak_coords = self.ops.stack([x_indices, y_indices], axis=-1)  # Shape: (n_peaks, 2)
+            peak_coords = ops.stack([x_indices, y_indices], axis=-1)  # Shape: (n_peaks, 2)
             window_offsets = window_coords[None, :, :]  # Shape: (1, window_size^2, 2)
             peak_centers = peak_coords[:, None, :]  # Shape: (n_peaks, 1, 2)
             
@@ -136,15 +137,15 @@ class ImageModel(keras.Model):
             local_peaks = self.model_fn(
                 window_X[None, :, :],  # Shape: (1, window_size, window_size)
                 window_Y[None, :, :],  # Shape: (1, window_size, window_size)
-                self.ops.zeros_like(pos_x)[:, None, None],  # Center each peak at (0,0)
-                self.ops.zeros_like(pos_y)[:, None, None],
+                ops.zeros_like(pos_x)[:, None, None],  # Center each peak at (0,0)
+                ops.zeros_like(pos_y)[:, None, None],
                 height[:, None, None],
                 width if isinstance(width, (float, int)) else width[:, None, None],
                 *[arg if isinstance(arg, (float, int)) else arg[:, None, None] for arg in kargs]
             )
             
             # Initialize output array with background
-            total = self.ops.zeros_like(X) + self.background
+            total = ops.zeros_like(X) + self.background
             
             # Add each peak's contribution to the total at the correct positions
             local_peaks_flat = local_peaks.reshape(pos_x.shape[0], -1)  # Flatten window dimensions
@@ -163,10 +164,10 @@ class ImageModel(keras.Model):
 
             if backend == 'tensorflow':
                 import tensorflow as tf
-                if self.ops.size(total) != self.ops.prod(self.ops.shape(total)):
+                if ops.size(total) != ops.prod(ops.shape(total)):
                     raise ValueError("The shape of 'total' is incompatible for reshaping into a flat array.")
-                total_flat = self.ops.reshape(total, (-1,))
-                current_values = self.ops.take(total_flat, flat_indices, axis=0)
+                total_flat = ops.reshape(total, (-1,))
+                current_values = ops.take(total_flat, flat_indices, axis=0)
                 values_tf = tf.convert_to_tensor(valid_values, dtype=tf.float32)
                 
                 coords_tf = tf.stack([coords_tf[:, 1], coords_tf[:, 0]], axis=1)
@@ -232,16 +233,9 @@ class GaussianModel(ImageModel):
 
     def model_fn(self, x, y, pos_x, pos_y, height, width, *args):
         """Core computation for Gaussian model using Keras."""
-        return height * self.ops.exp(
-            -(self.ops.square(x - pos_x) + self.ops.square(y - pos_y)) / (2 * self.ops.square(width))
+        return height * ops.exp(
+            -(ops.square(x - pos_x) + ops.square(y - pos_y)) / (2 * ops.square(width))
         )
-
-    @staticmethod
-    @njit(nopython=True)
-    def model_fn_numba(x, y, pos_x, pos_y, height, width, *args):
-        """Core computation for Gaussian model using numba."""
-        return height * np.exp(-((x - pos_x) ** 2 + (y - pos_y) ** 2) / (2 * width**2))
-
 
 class LorentzianModel(ImageModel):
     """Lorentzian peak model."""
@@ -258,14 +252,8 @@ class LorentzianModel(ImageModel):
     def model_fn(self, x, y, pos_x, pos_y, height, width, *args):
         """Core computation for Lorentzian model using Keras."""
         return height / (
-            1 + (self.ops.square(x - pos_x) + self.ops.square(y - pos_y)) / self.ops.square(width)
+            1 + (ops.square(x - pos_x) + ops.square(y - pos_y)) / ops.square(width)
         )
-
-    @staticmethod
-    @njit(nopython=True)
-    def model_fn_numba(x, y, pos_x, pos_y, height, width, *args):
-        """Core computation for Lorentzian model using numba."""
-        return height / (1 + ((x - pos_x) ** 2 + (y - pos_y) ** 2) / width**2)
 
 
 class VoigtModel(ImageModel):
@@ -290,32 +278,14 @@ class VoigtModel(ImageModel):
         """Core computation for Voigt model using Keras."""
         # Convert width to sigma and gamma
         sigma = width
-        gamma = width / self.ops.sqrt(2 * self.ops.log(2.0))
+        gamma = width / ops.sqrt(2 * ops.log(2.0))
         
         # Calculate squared distance
-        R2 = self.ops.square(x - pos_x) + self.ops.square(y - pos_y)
+        R2 = ops.square(x - pos_x) + ops.square(y - pos_y)
         
         # Compute Gaussian and Lorentzian parts
-        gaussian_part = self.ops.exp(-R2 / (2 * sigma**2))
-        lorentzian_part = gamma**3 / self.ops.power(R2 + gamma**2, 3/2)
-        
-        # Return weighted sum
-        return height * (ratio * gaussian_part + (1 - ratio) * lorentzian_part)
-
-    @staticmethod
-    @njit(nopython=True)
-    def model_fn_numba(x, y, pos_x, pos_y, height, width, ratio):
-        """Core computation for Voigt model using numba."""
-        # Convert width to sigma and gamma
-        sigma = width
-        gamma = width / np.sqrt(2 * np.log(2))
-        
-        # Calculate squared distance
-        R2 = (x - pos_x) ** 2 + (y - pos_y) ** 2
-        
-        # Compute Gaussian and Lorentzian parts
-        gaussian_part = np.exp(-R2 / (2 * sigma**2))
-        lorentzian_part = gamma**3 / (R2 + gamma**2) ** (3/2)
+        gaussian_part = ops.exp(-R2 / (2 * sigma**2))
+        lorentzian_part = gamma**3 / ops.power(R2 + gamma**2, 3/2)
         
         # Return weighted sum
         return height * (ratio * gaussian_part + (1 - ratio) * lorentzian_part)
@@ -330,26 +300,25 @@ class GaussianKernel:
         Args:
             backend (str, optional): Backend to use ('tensorflow', 'pytorch', or 'jax'). Defaults to 'jax'.
         """
-        self.ops = keras.ops
 
     def gaussian_kernel(self, sigma):
         """Creates a 2D Gaussian kernel with the given sigma."""
         size = int(4 * sigma + 0.5) * 2 + 1  # Odd size
-        x = self.ops.arange(-(size // 2), (size // 2) + 1, dtype='float32')
-        x_grid, y_grid = self.ops.meshgrid(x, x)
-        kernel = self.ops.exp(-(x_grid**2 + y_grid**2) / (2 * sigma**2))
-        return kernel / self.ops.sum(kernel)
+        x = ops.arange(-(size // 2), (size // 2) + 1, dtype='float32')
+        x_grid, y_grid = ops.meshgrid(x, x)
+        kernel = ops.exp(-(x_grid**2 + y_grid**2) / (2 * sigma**2))
+        return kernel / ops.sum(kernel)
 
     def gaussian_filter(self, image, sigma):
         """Applies Gaussian filter to a 2D image."""
         # Ensure both image and kernel are float32
-        image = self.ops.cast(image, 'float32')
+        image = ops.cast(image, 'float32')
         kernel = self.gaussian_kernel(sigma)
         # Add channel dimensions for input and kernel
-        image = self.ops.expand_dims(self.ops.expand_dims(image, 0), -1)  # [1, H, W, 1]
-        kernel = self.ops.expand_dims(self.ops.expand_dims(kernel, -1), -1)  # [H, W, 1, 1]
-        filtered = self.ops.conv(image, kernel, padding='same')
-        return self.ops.squeeze(filtered)  # Remove extra dimensions
+        image = ops.expand_dims(ops.expand_dims(image, 0), -1)  # [1, H, W, 1]
+        kernel = ops.expand_dims(ops.expand_dims(kernel, -1), -1)  # [H, W, 1, 1]
+        filtered = ops.conv(image, kernel, padding='same')
+        return ops.squeeze(filtered)  # Remove extra dimensions
 
 @njit
 def gaussian_2d_single(xy, pos_x, pos_y, height, width, background):

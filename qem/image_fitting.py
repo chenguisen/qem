@@ -20,6 +20,7 @@ from skimage.feature.peak import peak_local_max
 from scipy.optimize import curve_fit
 from tqdm import tqdm
 import keras
+from keras import ops
 
 # Local imports
 from qem.crystal_analyzer import CrystalAnalyzer
@@ -102,9 +103,6 @@ class ImageFitting:
         # Create Gaussian kernel for filtering
         self.kernel = GaussianKernel()
 
-        # Get backend modules from model
-        self.ops = self.model.ops
-
         # Initialize missing attributes
         self._atom_types = np.array([])
         self._coordinates = np.array([])
@@ -122,12 +120,12 @@ class ImageFitting:
 
     def initialize_grid(self):
         """Initialize the coordinate grids for the model."""
-        self.image_tensor = self.ops.convert_to_tensor(self.image, dtype="float32")
-        x = self.ops.arange(self.nx, dtype='float32')
-        y = self.ops.arange(self.ny, dtype='float32')
-        X, Y = self.ops.meshgrid(x, y)
-        self.X = self.ops.convert_to_tensor(X, dtype="float32")
-        self.Y = self.ops.convert_to_tensor(Y, dtype="float32")
+        self.image_tensor = ops.convert_to_tensor(self.image, dtype="float32")
+        x = ops.arange(self.nx, dtype='float32')
+        y = ops.arange(self.ny, dtype='float32')
+        X, Y = ops.meshgrid(x, y)
+        self.X = ops.convert_to_tensor(X, dtype="float32")
+        self.Y = ops.convert_to_tensor(Y, dtype="float32")
 
     def _create_model(self, params=None):
         """Create a new model instance based on the model type."""
@@ -183,9 +181,9 @@ class ImageFitting:
 
         # Prepare model arguments based on model type
         if self.same_width and hasattr(self, 'atom_types') and len(self.atom_types) > 0:
-            width = self.ops.take(width, self.atom_types[atoms_selected])
-        if 'ratio' is not None:
-            ratio = self.ops.take(ratio, self.atom_types[atoms_selected])
+            width = ops.take(width, self.atom_types[atoms_selected])
+        if ratio is not None:
+            ratio = ops.take(ratio, self.atom_types[atoms_selected])
             params_tuple = (pos_x, pos_y, height, width, ratio)
         else:
             params_tuple = (pos_x, pos_y, height, width)
@@ -221,7 +219,7 @@ class ImageFitting:
         Returns:
             numpy.ndarray: The Butterworth window used for fitting.
         """
-        return butterworth_window(self.image.shape, 0.5, 5)
+        return butterworth_window(self.image.shape, 0.5, 10)
 
     @property
     def volume(self):
@@ -304,10 +302,10 @@ class ImageFitting:
         while rate > 0.5 * rate_max:
             influence_map = np.zeros((nx, ny))
             for i in range(num_coordinates):
-                i_l = np.maximum(self.coordinates[i, 0] - n, 0).astype(np.int64)
-                i_r = np.minimum(self.coordinates[i, 0] + n, self.nx).astype(np.int64)
-                i_u = np.maximum(self.coordinates[i, 1] - n, 0).astype(np.int64)
-                i_d = np.minimum(self.coordinates[i, 1] + n, self.ny).astype(np.int64)
+                i_l = np.maximum(self.coordinates[i, 0] - n, 0).astype(np.int32)
+                i_r = np.minimum(self.coordinates[i, 0] + n, self.nx).astype(np.int32)
+                i_u = np.maximum(self.coordinates[i, 1] - n, 0).astype(np.int32)
+                i_d = np.minimum(self.coordinates[i, 1] + n, self.ny).astype(np.int32)
                 influence_map[i_l: i_r + 1, i_u: i_d + 1] = 1
             if n == 0:
                 rate = (np.sum(influence_map) - n_filled) / num_coordinates
@@ -326,17 +324,17 @@ class ImageFitting:
 
         for i in range(num_coordinates):
             # Calculate the indices for the larger area (influence_map)
-            i_l = np.maximum(self.coordinates[i, 0] - n1, 0).astype(np.int64)
-            i_r = np.minimum(self.coordinates[i, 0] + n1, nx).astype(np.int64)
-            i_u = np.maximum(self.coordinates[i, 1] - n1, 0).astype(np.int64)
-            i_d = np.minimum(self.coordinates[i, 1] + n1, ny).astype(np.int64)
+            i_l = np.maximum(self.coordinates[i, 0] - n1, 0).astype(np.int32)
+            i_r = np.minimum(self.coordinates[i, 0] + n1, nx).astype(np.int32)
+            i_u = np.maximum(self.coordinates[i, 1] - n1, 0).astype(np.int32)
+            i_d = np.minimum(self.coordinates[i, 1] + n1, ny).astype(np.int32)
             influence_map[i_l: i_r + 1, i_u: i_d + 1] = 1
 
             # Calculate the indices for the smaller area (direct_influence_map)
-            i_l = np.maximum(self.coordinates[i, 0] - n2, 0).astype(np.int64)
-            i_r = np.minimum(self.coordinates[i, 0] + n2, nx).astype(np.int64)
-            i_u = np.maximum(self.coordinates[i, 1] - n2, 0).astype(np.int64)
-            i_d = np.minimum(self.coordinates[i, 1] + n2, ny).astype(np.int64)
+            i_l = np.maximum(self.coordinates[i, 0] - n2, 0).astype(np.int32)
+            i_r = np.minimum(self.coordinates[i, 0] + n2, nx).astype(np.int32)
+            i_u = np.maximum(self.coordinates[i, 1] - n2, 0).astype(np.int32)
+            i_d = np.minimum(self.coordinates[i, 1] + n2, ny).astype(np.int32)
             direct_influence_map[i_l: i_r + 1, i_u: i_d + 1] = 1
 
         radius = (np.sum(direct_influence_map) / num_coordinates) ** (1 / 2) / np.pi
@@ -376,6 +374,8 @@ class ImageFitting:
         # Initialize position and height parameters
         pos_x = copy.deepcopy(self.coordinates[:, 0]).astype(float)
         pos_y = copy.deepcopy(self.coordinates[:, 1]).astype(float)
+        pos_x = ops.clip(pos_x,0,self.image.shape[0]-1)
+        pos_y = ops.clip(pos_y,0,self.image.shape[1]-1)
 
         # Initialize background
         if self.fit_background:
@@ -419,7 +419,7 @@ class ImageFitting:
             params["background"] = init_background
 
         for key in params.keys():
-            params[key] = self.ops.convert_to_tensor(
+            params[key] = ops.convert_to_tensor(
                 params[key], dtype='float32'
             )
 
@@ -824,8 +824,8 @@ class ImageFitting:
         diff = self.image_tensor - prediction
         diff = diff * self.window
         # damping the difference near the edge
-        mse = self.ops.sqrt(self.ops.mean(self.ops.square(diff)))
-        L1 = self.ops.mean(self.ops.abs(diff))
+        mse = ops.sqrt(ops.mean(ops.square(diff)))
+        L1 = ops.mean(ops.abs(diff))
         return mse + L1
     
     def loss(self, image, prediction):
@@ -846,8 +846,8 @@ class ImageFitting:
         """
         diff = image - prediction
         diff = diff * self.window
-        mse = self.ops.sqrt(self.ops.mean(self.ops.square(diff)))
-        L1 = self.ops.mean(self.ops.abs(diff))
+        mse = ops.sqrt(ops.mean(ops.square(diff)))
+        L1 = ops.mean(ops.abs(diff))
         return mse + L1
 
     def residual(self, params: dict):
@@ -920,15 +920,15 @@ class ImageFitting:
         # The column indices correspond to the third dimension of the original tensors.
         cols_tensor = valid_indices[2]
 
-        rows_tensor = ops.cast(global_Y_valid, 'int64') * self.nx + ops.cast(global_X_valid, 'int64')
+        rows_tensor = ops.cast(global_Y_valid, 'int32') * self.nx + ops.cast(global_X_valid, 'int32')
         
         rows = ops.convert_to_numpy(rows_tensor)
         cols = ops.convert_to_numpy(cols_tensor)
         data = ops.convert_to_numpy(data_tensor)
         if self.fit_background:
             background_rows = ops.convert_to_numpy(self.Y).flatten() * self.nx + ops.convert_to_numpy(self.X).flatten()
-            rows = ops.concatenate([rows, background_rows.astype(np.int64)])
-            cols = ops.concatenate([cols, ops.full(self.nx * self.ny, self.num_coordinates, dtype=np.int64)])
+            rows = ops.concatenate([rows, background_rows.astype(np.int32)])
+            cols = ops.concatenate([cols, ops.full(self.nx * self.ny, self.num_coordinates, dtype=np.int32)])
             data = ops.concatenate([data, ops.ones(self.nx * self.ny, dtype=np.float32)])
             design_matrix = coo_matrix(
                 (data, (rows, cols)),
@@ -1060,9 +1060,9 @@ class ImageFitting:
             params = self.params if self.params is not None else self.init_params()
 
         self.converged = False
-        # params = self.linear_estimator(params["pos_x"], params["pos_y"])
+        # params = self.linear_estimator(params)
         while self.converged is False and num_epoch > 0:
-            # params = self.linear_estimator(params)
+            params = self.linear_estimator(params)
             pre_params = copy.deepcopy(params)
             num_epoch -= 1
             random_batches = get_random_indices_in_batches(
@@ -1109,7 +1109,7 @@ class ImageFitting:
                     plt.show()
                     plt.pause(1.0)
         self.converged = self.convergence(params, pre_params, tol)
-        # params = self.linear_estimator(params["pos_x"], params["pos_y"])
+        params = self.linear_estimator(params)
         self.params = params
         self.prediction = self.predict(params,local=True)
         return params
@@ -1222,8 +1222,8 @@ class ImageFitting:
         
         if keras.backend.backend() == "jax":
             # conver the params to numpy array
-            current_params = {key: self.ops.convert_to_numpy(value) for key, value in current_params.items()}
-            pre_params = {key: self.ops.convert_to_numpy(value) for key, value in pre_params.items()}
+            current_params = {key: ops.convert_to_numpy(value) for key, value in current_params.items()}
+            pre_params = {key: ops.convert_to_numpy(value) for key, value in pre_params.items()}
         
         while not converged:
             with ThreadPoolExecutor() as executor:
@@ -1307,7 +1307,7 @@ class ImageFitting:
         self, params: dict, local_params: dict, mask: np.ndarray, mask_local=None
     ):
         for key, value in local_params.items():
-            value = self.ops.convert_to_tensor(value)
+            value = ops.convert_to_tensor(value)
             shared_value_list = ["background"]
             if self.same_width:
                 shared_value_list += ["width", "ratio"]
@@ -1326,17 +1326,17 @@ class ImageFitting:
     def project_params(self, params: dict):
         for key, value in params.items():
             if key == "pos_x":
-                params[key] = self.ops.clip(value, 0, self.nx - 1)
+                params[key] = ops.clip(value, 0, self.nx - 1)
             elif key == "pos_y":
-                params[key] = self.ops.clip(value, 0, self.ny - 1)
+                params[key] = ops.clip(value, 0, self.ny - 1)
             elif key == "height":
-                params[key] = self.ops.clip(value, 0, np.sum(self.image))
+                params[key] = ops.clip(value, 0, np.sum(self.image))
             elif key == "width":
-                params[key] = self.ops.clip(value, 1, min(self.nx, self.ny) / 2)
+                params[key] = ops.clip(value, 1, min(self.nx, self.ny) / 2)
             elif key == "ratio":
-                params[key] = self.ops.clip(value, 0, 1)
+                params[key] = ops.clip(value, 0, 1)
             elif key == "background":
-                params[key] = self.ops.clip(value, 0, np.max(self.image))
+                params[key] = ops.clip(value, 0, np.max(self.image))
         return params
 
     def update_coordinates(self):
