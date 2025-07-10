@@ -380,7 +380,7 @@ class ImageFitting:
 
     # find atomic columns
     def import_coordinates(self, coordinates: np.ndarray):
-        self.coordinates = coordinates
+        self.coordinates = coordinates[:,:2]
 
     def find_peaks(
         self,
