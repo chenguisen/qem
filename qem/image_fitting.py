@@ -102,6 +102,7 @@ class ImageFitting:
 
         # Create Gaussian kernel for filtering
         self.kernel = GaussianKernel()
+        self._window = None
 
         # Initialize missing attributes
         self._atom_types = np.array([])
@@ -145,6 +146,7 @@ class ImageFitting:
             raise ValueError(f"Model type {self.model_type} not supported.")
         if params is not None:
             model.set_params(params)
+            model.build(model.num_coordinates)
         return model
     
     def predict(self, params=None, local=True, atoms_selected=None):
@@ -217,9 +219,13 @@ class ImageFitting:
         Returns the window used for fitting.
 
         Returns:
-            numpy.ndarray: The Butterworth window used for fitting.
+            numpy.ndarray: A Butterworth-style window used for fitting.
         """
-        return butterworth_window(self.image.shape, 0.5, 10)
+        if self._window is  None:
+            window = butterworth_window(self.image.shape, 0.5, 10)
+            window = ops.convert_to_tensor(window)
+            self._window = window
+        return self._window
 
     @property
     def volume(self):
@@ -374,8 +380,8 @@ class ImageFitting:
         # Initialize position and height parameters
         pos_x = copy.deepcopy(self.coordinates[:, 0]).astype(float)
         pos_y = copy.deepcopy(self.coordinates[:, 1]).astype(float)
-        pos_x = ops.clip(pos_x,0,self.image.shape[0]-1)
-        pos_y = ops.clip(pos_y,0,self.image.shape[1]-1)
+        pos_x = np.clip(pos_x,0,self.image.shape[0]-1)
+        pos_y = np.clip(pos_y,0,self.image.shape[1]-1)
 
         # Initialize background
         if self.fit_background:
@@ -825,8 +831,8 @@ class ImageFitting:
         diff = diff * self.window
         # damping the difference near the edge
         mse = ops.sqrt(ops.mean(ops.square(diff)))
-        L1 = ops.mean(ops.abs(diff))
-        return mse + L1
+        l1 = ops.mean(ops.abs(diff))
+        return mse + l1
     
     def loss(self, image, prediction):
         """
@@ -847,8 +853,8 @@ class ImageFitting:
         diff = image - prediction
         diff = diff * self.window
         mse = ops.sqrt(ops.mean(ops.square(diff)))
-        L1 = ops.mean(ops.abs(diff))
-        return mse + L1
+        l1 = ops.mean(ops.abs(diff))
+        return mse + l1
 
     def residual(self, params: dict):
         # Compute the sum of the Gaussians
@@ -922,26 +928,24 @@ class ImageFitting:
 
         rows_tensor = ops.cast(global_Y_valid, 'int32') * self.nx + ops.cast(global_X_valid, 'int32')
         
-        rows = ops.convert_to_numpy(rows_tensor)
-        cols = ops.convert_to_numpy(cols_tensor)
-        data = ops.convert_to_numpy(data_tensor)
         if self.fit_background:
-            background_rows = ops.convert_to_numpy(self.Y).flatten() * self.nx + ops.convert_to_numpy(self.X).flatten()
-            rows = ops.concatenate([rows, background_rows.astype(np.int32)])
-            cols = ops.concatenate([cols, ops.full(self.nx * self.ny, self.num_coordinates, dtype=np.int32)])
-            data = ops.concatenate([data, ops.ones(self.nx * self.ny, dtype=np.float32)])
-            design_matrix = coo_matrix(
-                (data, (rows, cols)),
-                shape=(self.nx * self.ny, self.num_coordinates + 1),
-            )
+            background_rows = ops.reshape(self.Y, (-1,)) * self.nx + ops.reshape(self.X, (-1,))
+            rows_tensor = ops.concatenate([rows_tensor, ops.cast(background_rows, 'int32')])
+            cols_tensor = ops.concatenate([cols_tensor, ops.full((self.nx * self.ny,), self.num_coordinates, dtype='int32')])
+            data_tensor = ops.concatenate([data_tensor, ops.ones((self.nx * self.ny,), dtype='float32')])
+            shape = (self.nx * self.ny, self.num_coordinates + 1)
         else:
-            design_matrix = coo_matrix(
-                (data, (rows, cols)), shape=(self.nx * self.ny, self.num_coordinates)
-            )
+            shape = (self.nx * self.ny, self.num_coordinates)
+
+        design_matrix = coo_matrix(
+            (ops.convert_to_numpy(data_tensor), (ops.convert_to_numpy(rows_tensor), ops.convert_to_numpy(cols_tensor))),
+            shape=shape,
+        )
+
         # create the target as the image
-        b = self.image_tensor.ravel()
+        b = ops.convert_to_numpy(self.image_tensor).ravel()
         if not self.fit_background:
-            b = b - self.init_background
+            b = b - ops.convert_to_numpy(self.init_background)
         # solve the linear equation
         try:
             # Attempt to solve the linear system
@@ -973,9 +977,10 @@ class ImageFitting:
         # update the background and height
 
         if self.fit_background:
-            params["background"] = (
+            background = (
                 solution[-1] if solution[-1] > 0 else self.init_background
             )
+            params["background"] = ops.convert_to_tensor(background)
             height_scale = solution[:-1]
         else:
             height_scale = solution
@@ -994,7 +999,7 @@ class ImageFitting:
                 "The height_scale has values smaller than 0.1, the linear estimator is probably not accurate. I will limit it to 0.1 but be careful with the results."
             )
             height_scale[height_scale < 0.1] = 0.1
-        params["height"] = height_scale * params["height"]
+        params["height"] = ops.convert_to_tensor(height_scale) * ops.convert_to_tensor(params["height"])
         self.params = params
         return params
 
@@ -1011,9 +1016,7 @@ class ImageFitting:
         if image_tensor is None:
             image_tensor = self.image_tensor
         
-        self.model.set_params(params)
-        if not self.model.built:
-            self.model.build(self.model.num_coordinates)
+        self.model.set_params(params)        
         self.model.compile(optimizer=keras.optimizers.Adam(learning_rate=step_size),
             loss=self.loss)
         early_stopping = keras.callbacks.EarlyStopping(
@@ -1044,7 +1047,7 @@ class ImageFitting:
         self.params = params
         self.prediction = self.predict(params)
         # move prediction to cpu
-        if self.backend == "torch":
+        if keras.backend.backend() == "torch":
             self.prediction = self.prediction.cpu().numpy()
 
         return params
@@ -1081,8 +1084,8 @@ class ImageFitting:
                 select_params = self.select_params(params, atoms_selected)
                 self.model = self._create_model(select_params)
 
-                global_prediction = self.predict(params,local=True)
-                local_prediction = self.predict(select_params,local=True,atoms_selected=atoms_selected)
+                global_prediction = self.predict(params)
+                local_prediction = self.predict(select_params,atoms_selected=atoms_selected)
                 local_residual = global_prediction - local_prediction
                 local_target = image - local_residual
                 optimized_select_params = self.optimize(
@@ -1197,14 +1200,14 @@ class ImageFitting:
                     popt = p0                    
             else:
                 try:
-                    popt, _ = curve_fit(
+                    popt, _ = curve_fit(  # pylint: disable=unbalanced-tuple-unpacking
                         gaussian_2d_single,
                         (Xc, Yc),
                         cropped_img.ravel(),
                         p0=p0,
                         maxfev=2000
                     )
-                except Exception as e:
+                except Exception as _:
                     popt = p0  # fallback if fit fails
 
             # if popt[0] < 0 or popt[1] < 0:

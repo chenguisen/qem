@@ -167,27 +167,24 @@ class ImageModel(keras.Model):
                 if ops.size(total) != ops.prod(ops.shape(total)):
                     raise ValueError("The shape of 'total' is incompatible for reshaping into a flat array.")
                 total_flat = ops.reshape(total, (-1,))
-                current_values = ops.take(total_flat, flat_indices, axis=0)
                 values_tf = tf.convert_to_tensor(valid_values, dtype=tf.float32)
                 
-                coords_tf = tf.stack([coords_tf[:, 1], coords_tf[:, 0]], axis=1)
-                total = tf.tensor_scatter_nd_add(total_tf, coords_tf, values_tf)
+                coords_tf = tf.stack([valid_coords[:, 1], valid_coords[:, 0]], axis=1)
+                total = tf.tensor_scatter_nd_add(total_flat, coords_tf, values_tf)
             elif backend == 'torch':
                 import torch
-                coords_flat = global_coords.reshape(-1, 2)
-                values_flat = local_peaks_flat.reshape(-1)
-                valid_mask_flat = valid_mask.reshape(-1)
+                # Convert 2D coordinates to 1D indices for scatter
+                indices = (valid_coords[:, 1] * total.shape[1] + valid_coords[:, 0]).long()
                 
-                valid_coords = coords_flat[valid_mask_flat]
-                valid_values = values_flat[valid_mask_flat]
-                
-                if len(valid_coords) > 0:
-                    # Convert 2D coordinates to 1D indices for scatter
-                    indices = (valid_coords[:, 1] * total.shape[1] + valid_coords[:, 0]).long()
-                    
-                    total_flat = total.flatten()
-                    total_flat.scatter_add_(0, indices, valid_values)
-                    total = total_flat.reshape(total.shape)
+                total_flat = total.flatten()
+                total_flat.scatter_add_(0, indices, valid_values)
+                total = total_flat.reshape(total.shape)
+            elif backend == 'jax':
+                import jax.numpy as jnp
+                total_jax = jnp.array(total)
+                global_coords_jax = jnp.array(valid_coords)
+                valid_values_jax = jnp.array(valid_values)
+                total = total_jax.at[global_coords_jax[:, 1], global_coords_jax[:, 0]].add(valid_values_jax)
             return total
 
     def sum(self, X, Y, pos_x, pos_y, height, width, *kargs, local=False):
@@ -207,17 +204,6 @@ class ImageModel(keras.Model):
             array: Sum of all peaks plus background
         """
         return self._sum(X, Y, pos_x, pos_y, height, width, *kargs, local=local)
-
-    @staticmethod
-    @njit(nopython=True)
-    def sum_numba(X, Y, pos_x, pos_y, height, width, *args):
-        """Calculate sum of peaks using numba."""
-        return ImageModel.model_fn_numba(
-            X[:, :, None], Y[:, :, None],
-            pos_x[None, None, :], pos_y[None, None, :],
-            height, width, *args
-        )
-
 
 class GaussianModel(ImageModel):
     """Gaussian peak model."""
@@ -281,11 +267,11 @@ class VoigtModel(ImageModel):
         gamma = width / ops.sqrt(2 * ops.log(2.0))
         
         # Calculate squared distance
-        R2 = ops.square(x - pos_x) + ops.square(y - pos_y)
+        r2 = ops.square(x - pos_x) + ops.square(y - pos_y)
         
         # Compute Gaussian and Lorentzian parts
-        gaussian_part = ops.exp(-R2 / (2 * sigma**2))
-        lorentzian_part = gamma**3 / ops.power(R2 + gamma**2, 3/2)
+        gaussian_part = ops.exp(-r2 / (2 * sigma**2))
+        lorentzian_part = gamma**3 / ops.power(r2 + gamma**2, 3/2)
         
         # Return weighted sum
         return height * (ratio * gaussian_part + (1 - ratio) * lorentzian_part)
