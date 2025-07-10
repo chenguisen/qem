@@ -857,6 +857,146 @@ class ImageFitting:
         return diff
     
     # fitting
+    def linear_estimator(self, params: dict = None, non_negative=False):
+        if params is None:
+            if self.params is None:
+                self.init_params()
+            params = self.params
+        # create the design matrix as array of gaussian peaks + background
+        pos_x = params["pos_x"]
+        pos_y = params["pos_y"]
+        width = params["width"]
+        height = params["height"]
+        ratio = params.get('ratio',None)
+        
+        if self.same_width:
+            width = width[self.atom_types]
+            if ratio is not None:
+                ratio = ratio[self.atom_types]
+        
+        # if (height < 0).any():
+        #     logging.warning(
+        #         "The height has negative values, the linear estimator is not valid, I will make it to zero but be careful with the results."
+        #     )
+        #     height[height < 0] = 0
+            
+
+
+        # Vectorized implementation using keras.ops
+        window_size = ops.cast(ops.max(width) * 5, dtype="int32")
+        x = ops.arange(-window_size, window_size + 1, 1, dtype='float32')
+        y = ops.arange(-window_size, window_size + 1, 1, dtype='float32')
+        local_X, local_Y = ops.meshgrid(x, y, indexing="xy")
+
+        input_params = (ops.mod(pos_x, 1), ops.mod(pos_y, 1), height, width)
+        if ratio is not None:
+            input_params += (ratio,)
+
+        peak_local = self.model.model_fn(local_X[..., None], local_Y[..., None], *input_params)
+
+        pos_x_int = ops.floor(pos_x)
+        pos_y_int = ops.floor(pos_y)
+
+        global_X = ops.expand_dims(local_X, -1) + pos_x_int
+        global_Y = ops.expand_dims(local_Y, -1) + pos_y_int
+
+        mask = (global_X >= 0) & (global_X < self.nx) & (global_Y >= 0) & (global_Y < self.ny)
+
+        # Get the indices of valid elements where the mask is True.
+        valid_indices = ops.where(mask)
+
+        # Flatten the tensors and calculate 1D indices to replicate gather_nd,
+        # ensuring compatibility with Keras 2 and other backends.
+        shape = ops.shape(peak_local)
+        # ops.where returns a tuple of index tensors, one for each dimension.
+        # We access them with tuple indexing, not array slicing.
+        flat_indices = valid_indices[0] * (shape[1] * shape[2]) + valid_indices[1] * shape[2] + valid_indices[2]
+
+        # Gather the valid data from the flattened tensors using the 1D indices.
+        data_tensor = ops.take(ops.reshape(peak_local, (-1,)), flat_indices)
+        global_X_valid = ops.take(ops.reshape(global_X, (-1,)), flat_indices)
+        global_Y_valid = ops.take(ops.reshape(global_Y, (-1,)), flat_indices)
+
+        # The column indices correspond to the third dimension of the original tensors.
+        cols_tensor = valid_indices[2]
+
+        rows_tensor = ops.cast(global_Y_valid, 'int64') * self.nx + ops.cast(global_X_valid, 'int64')
+        
+        rows = ops.convert_to_numpy(rows_tensor)
+        cols = ops.convert_to_numpy(cols_tensor)
+        data = ops.convert_to_numpy(data_tensor)
+        if self.fit_background:
+            background_rows = ops.convert_to_numpy(self.Y).flatten() * self.nx + ops.convert_to_numpy(self.X).flatten()
+            rows = ops.concatenate([rows, background_rows.astype(np.int64)])
+            cols = ops.concatenate([cols, ops.full(self.nx * self.ny, self.num_coordinates, dtype=np.int64)])
+            data = ops.concatenate([data, ops.ones(self.nx * self.ny, dtype=np.float32)])
+            design_matrix = coo_matrix(
+                (data, (rows, cols)),
+                shape=(self.nx * self.ny, self.num_coordinates + 1),
+            )
+        else:
+            design_matrix = coo_matrix(
+                (data, (rows, cols)), shape=(self.nx * self.ny, self.num_coordinates)
+            )
+        # create the target as the image
+        b = self.image_tensor.ravel()
+        if not self.fit_background:
+            b = b - self.init_background
+        # solve the linear equation
+        try:
+            # Attempt to solve the linear system
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                if non_negative:
+                    design_matrix_csr = design_matrix.tocsr()
+                    result = lsq_linear(design_matrix_csr, b, bounds=(0, np.inf))
+                    solution = result.x
+                else:
+                    solution = spsolve(
+                        design_matrix.T @ design_matrix, design_matrix.T @ b
+                    )
+                    # Check if any of the caught warnings are related to a singular matrix
+                    if w and any(
+                        "singular matrix" in str(warning.message) for warning in w
+                    ):
+                        logging.warning(
+                            "Warning: Singular matrix encountered. Please refine the peak positions better before linear estimation. The parameters are not updated."
+                        )
+                        return params
+
+        except np.linalg.LinAlgError as e:
+            if "Singular matrix" in str(e):
+                logging.warning("Error: Singular matrix encountered.")
+            else:
+                raise
+
+        # update the background and height
+
+        if self.fit_background:
+            params["background"] = (
+                solution[-1] if solution[-1] > 0 else self.init_background
+            )
+            height_scale = solution[:-1]
+        else:
+            height_scale = solution
+        if np.nan in height_scale:
+            logging.warning(
+                "The height_scale has NaN, the linear estimator is not valid, parameters are not updated"
+            )
+            return params
+        if (height_scale > 5).any():
+            logging.warning(
+                "The height_scale has values larger than 5, the linear estimator is probably not accurate. I will limit it to 5 but be careful with the results."
+            )
+            height_scale[height_scale > 5] = 5
+        if (height_scale < 0.1).any():
+            logging.warning(
+                "The height_scale has values smaller than 0.1, the linear estimator is probably not accurate. I will limit it to 0.1 but be careful with the results."
+            )
+            height_scale[height_scale < 0.1] = 0.1
+        params["height"] = height_scale * params["height"]
+        self.params = params
+        return params
 
     def optimize(
         self,
