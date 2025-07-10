@@ -207,7 +207,7 @@ class ImageFitting:
         """
         if self._window is  None:
             window = butterworth_window(self.image.shape, 0.5, 10)
-            window = ops.convert_to_tensor(window)
+            # window = ops.convert_to_tensor(window, dtype="float32")
             self._window = window
         return self._window
 
@@ -1140,12 +1140,12 @@ class ImageFitting:
         # Prepare per-cell fitting function
         def fit_cell(index, params):
             mask = point_record == index + 1
-            if not ops.any(mask):
+            if not np.any(mask):
                 return None  # No pixels in this cell
 
             cell_img = image * mask
             # Crop to bounding box for efficiency
-            ys, xs = ops.where(mask)
+            ys, xs = np.where(mask)
             y0, y1 = ys.min(), ys.max() + 1
             x0, x1 = xs.min(), xs.max() + 1
             cropped_img = cell_img[y0:y1, x0:x1]
@@ -1157,20 +1157,18 @@ class ImageFitting:
             cropped_img[~cropped_mask] = 0
 
             # Prepare grid for fitting
-            Xc, Yc = ops.meshgrid(ops.arange(x0, x1), ops.arange(y0, y1), indexing="xy")
-            Xc = ops.convert_to_numpy(Xc)
-            Yc = ops.convert_to_numpy(Yc)
+            Xc, Yc = np.meshgrid(np.arange(x0, x1), np.arange(y0, y1), indexing="xy")
 
             # Prepare initial params for this cell
             local_param = {}
-            local_param['pos_x'] = ops.convert_to_numpy([params['pos_x'][index]])
-            local_param['pos_y'] = ops.convert_to_numpy([params['pos_y'][index]])
-            local_param['height'] = ops.convert_to_numpy(params['height'][index] + params['background'] - local_min)
-            local_param['width'] = ops.convert_to_numpy(params['width'])
-            local_param['background'] = ops.convert_to_numpy([0.0])
+            local_param['pos_x'] = [params['pos_x'][index]]
+            local_param['pos_y'] = [params['pos_y'][index]]
+            local_param['height'] = params['height'][index] + params['background'] - local_min
+            local_param['width'] = params['width']
+            local_param['background'] = [0.0]
             self.fit_background = False
 
-            atoms_selected = ops.zeros(self.num_coordinates, dtype=bool)
+            atoms_selected = np.zeros(self.num_coordinates, dtype=bool)
             atoms_selected[index] = True
 
             p0 = [
@@ -1200,11 +1198,11 @@ class ImageFitting:
             #     popt = p0
 
             optimized_param = {
-                'pos_x': [popt[0]],
-                'pos_y': [popt[1]],
+                'pos_x': popt[0],
+                'pos_y': popt[1],
                 'height': popt[2],
                 'width': popt[3],
-                'background': [popt[4]]
+                'background': popt[4]
             }
             return optimized_param, index
 
@@ -1224,8 +1222,8 @@ class ImageFitting:
                     if result is None:
                         continue
                     optimized_param, index = result
-                    current_params['pos_x'][index] = optimized_param['pos_x'][0]
-                    current_params['pos_y'][index] = optimized_param['pos_y'][0]
+                    current_params['pos_x'][index] = optimized_param['pos_x']
+                    current_params['pos_y'][index] = optimized_param['pos_y']
             converged = self.convergence(current_params, pre_params, tol)
             pre_params = copy.deepcopy(current_params) 
         self.params = current_params
