@@ -174,20 +174,20 @@ class ImageModel(keras.Model):
                 total = tf.tensor_scatter_nd_add(total_tf, coords_tf, values_tf)
             elif backend == 'torch':
                 import torch
-                total_torch = torch.from_numpy(np.array(total, dtype=np.float32))
-                flat_indices = valid_coords[:, 1] * total.shape[1] + valid_coords[:, 0]
-                indices_torch = torch.from_numpy(np.array(flat_indices, dtype=np.int64))
-                values_torch = torch.from_numpy(np.array(valid_values, dtype=np.float32))
+                coords_flat = global_coords.reshape(-1, 2)
+                values_flat = local_peaks_flat.reshape(-1)
+                valid_mask_flat = valid_mask.reshape(-1)
                 
-                total_flat = total_torch.flatten()
-                total_flat.scatter_add_(0, indices_torch, values_torch)
-                total = total_flat.reshape(total.shape).numpy()
-            elif backend == 'jax':
-                import jax.numpy as jnp
-                total_jax = jnp.array(total)
-                global_coords_jax = jnp.array(valid_coords)
-                valid_values_jax = jnp.array(valid_values)
-                total = total_jax.at[global_coords_jax[:, 1], global_coords_jax[:, 0]].add(valid_values_jax)
+                valid_coords = coords_flat[valid_mask_flat]
+                valid_values = values_flat[valid_mask_flat]
+                
+                if len(valid_coords) > 0:
+                    # Convert 2D coordinates to 1D indices for scatter
+                    indices = (valid_coords[:, 1] * total.shape[1] + valid_coords[:, 0]).long()
+                    
+                    total_flat = total.flatten()
+                    total_flat.scatter_add_(0, indices, valid_values)
+                    total = total_flat.reshape(total.shape)
             return total
 
     def sum(self, X, Y, pos_x, pos_y, height, width, *kargs, local=False):
