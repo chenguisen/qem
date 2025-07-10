@@ -137,62 +137,24 @@ class ImageFitting:
             model.build(model.num_coordinates)
         return model
     
-    def predict(self, params=None, local=True, atoms_selected=None):
-        """Predict the image based on current parameters.
+    def predict(self, local: bool = False):
+        """Predict the image based on the model's current parameters.
+
         Args:
-            params (dict, optional): Parameters to use for prediction. If None, uses self.params.
-            local (bool, optional): If True, calculate peaks locally within a fixed window. Defaults to False.
-            atoms_selected (array, optional): Indices of atoms to include in the prediction. If None, uses all atoms.
+            local (bool, optional): If True, calculate peaks locally. Defaults to False.
+
         Returns:
             array: Predicted image
         """
-        if params is None:
-            if not self.params:
-                self.init_params()
-            params = self.params
+        prediction = self.model.sum(self.x_grid, self.y_grid, local=local)
 
-        if atoms_selected is None:
-            atoms_selected = np.arange(self.num_coordinates)
-        # Validate parameters
-        required_params = ["pos_x", "pos_y", "height", "width"]
-        if not all(k in params for k in required_params):
-            raise ValueError(f"Missing required parameters in params dict: {required_params}")
-
-        # Get parameters and convert to backend tensors
-        pos_x = params["pos_x"]
-        pos_y = params["pos_y"]
-        height = params["height"]
-        width = params["width"]
-        ratio = params.get("ratio", None)
-        background = params.get("background", self.init_background)
-        self.model.background = background
-
-        # Prepare model arguments based on model type
-        if self.same_width and hasattr(self, 'atom_types') and len(self.atom_types) > 0:
-            width = ops.take(width, self.atom_types[atoms_selected])
-        if ratio is not None:
-            ratio = ops.take(ratio, self.atom_types[atoms_selected])
-            params_tuple = (pos_x, pos_y, height, width, ratio)
-        else:
-            params_tuple = (pos_x, pos_y, height, width)
-        # do prediction by calling the model's sum method
-        prediction = self.model.sum(
-            self.x_grid, self.y_grid, *params_tuple, local=local
-        )
-            # Handle periodic boundary conditions
+        # Handle periodic boundary conditions by rolling the image
         if self.pbc:
             for i, j in [(1, 0), (0, 1), (-1, 0), (0, -1), 
                         (1, 1), (-1, -1), (1, -1), (-1, 1)]:
-                if ratio is not None:
-                    params_tuple = (pos_x+ i * self.nx, pos_y + j * self.ny, height, width, ratio)
-                else:
-                    params_tuple = (pos_x + i * self.nx, pos_y + j * self.ny, height, width)
-                # Add the periodic boundary conditions to the prediction
-                    prediction += self.model.sum(
-                        self.x_grid, self.y_grid,
-                        *params_tuple,
-                        local=local
-                    )
+                prediction += self.model.sum(
+                    self.x_grid + i * self.nx, self.y_grid + j * self.ny, local=local
+                )
         return prediction
 
     # Properties
@@ -207,7 +169,7 @@ class ImageFitting:
         """
         if self._window is  None:
             window = butterworth_window(self.image.shape, 0.5, 10)
-            # window = ops.convert_to_tensor(window, dtype="float32")
+            window = ops.convert_to_tensor(window, dtype="float32")
             self._window = window
         return self._window
 
@@ -810,7 +772,7 @@ class ImageFitting:
     def loss_val(self, params: dict):
         prediction = self.predict(params)
         diff = self.image_tensor - prediction
-        diff = diff * self.window
+        diff = ops.multiply(diff, self.window)
         # damping the difference near the edge
         mse = ops.sqrt(ops.mean(ops.square(diff)))
         l1 = ops.mean(ops.abs(diff))
@@ -833,7 +795,7 @@ class ImageFitting:
             The computed loss value.
         """
         diff = image - prediction
-        diff = diff * self.window
+        diff = ops.multiply(diff, self.window)
         mse = ops.sqrt(ops.mean(ops.square(diff)))
         l1 = ops.mean(ops.abs(diff))
         return mse + l1
@@ -1031,7 +993,7 @@ class ImageFitting:
 
     def fit_stochastic(
         self,
-        params: dict = None,  # type: ignore
+        params: dict = None,  # initial params, optional
         num_epoch: int = 5,
         batch_size: int = 500,
         maxiter: int = 50,
@@ -1044,6 +1006,7 @@ class ImageFitting:
             params = self.params if self.params is not None else self.init_params()
 
         self.converged = False
+        self._create_model(params)
         # params = self.linear_estimator(params)
         while self.converged is False and num_epoch > 0:
             params = self.linear_estimator(params)
@@ -1059,12 +1022,12 @@ class ImageFitting:
                 atoms_selected = np.zeros(self.num_coordinates, dtype=bool)
                 atoms_selected[index] = True
                 select_params = self.select_params(params, atoms_selected)
-                self.model = self._create_model(select_params)
+                self.model.set_params(select_params)
 
                 global_prediction = self.predict(params)
                 local_prediction = self.predict(select_params,atoms_selected=atoms_selected)
                 local_residual = global_prediction - local_prediction
-                local_target = image - local_residual
+                local_target = ops.stop_gradient(image - local_residual)
                 optimized_select_params = self.optimize(
                     local_target, select_params, maxiter=maxiter, tol=tol, step_size=step_size, verbose=verbose
                 )
@@ -1303,10 +1266,16 @@ class ImageFitting:
             if self.same_width:
                 shared_value_list += ["width", "ratio"]
             if key not in shared_value_list:
-                if mask_local is None:
-                    params[key] = params[key].at[mask].set(value)
+                if keras.backend.backend() == "jax":
+                    if mask_local is None:
+                        params[key] = params[key].at[mask].set(value)
+                    else:
+                        params[key] = params[key].at[mask].set(value[mask_local])
                 else:
-                    params[key] = params[key].at[mask].set(value[mask_local])
+                    if mask_local is None:
+                        params[key] = value
+                    else:
+                        params[key] = value[mask_local]
             else:
                 weight = mask.sum() / self.num_coordinates
                 update = value - params[key]

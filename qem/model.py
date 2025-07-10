@@ -39,17 +39,17 @@ class ImageModel(keras.Model):
         
     def get_params(self):
         return {
-            "pos_x": np.array(self.pos_x),
-            "pos_y": np.array(self.pos_y),
-            "height": np.array(self.height),
-            "width": np.array(self.width),
-            "background": np.array(self.background),
+            "pos_x": ops.convert_to_tensor(self.pos_x),
+            "pos_y": ops.convert_to_tensor(self.pos_y),
+            "height": ops.convert_to_tensor(self.height),
+            "width": ops.convert_to_tensor(self.width),
+            "background": ops.convert_to_tensor(self.background),
         }
 
     def call(self, inputs):
         """Forward pass of the model."""
         x_grid, y_grid = inputs
-        return self.sum(x_grid, y_grid, self.pos_x, self.pos_y, self.height, self.width)
+        return self.sum(x_grid, y_grid)
 
     @abstractmethod
     def model_fn(self, x, y, pos_x, pos_y, height, width, *args):
@@ -62,144 +62,111 @@ class ImageModel(keras.Model):
         """Calculate the volume of each peak."""
         pass
 
-    def _sum(self, x_grid, y_grid, pos_x, pos_y, height, width, *kargs, local=False):
+    def _sum(self, x_grid, y_grid, local=True):
         """Calculate all peaks either globally or locally.
         
         Args:
             x_grid (array): x_grid coordinates mesh
             y_grid (array): y_grid coordinates mesh
-            pos_x (array): x_grid positions of peaks in the same coordinate space as x_grid
-            pos_y (array): y_grid positions of peaks in the same coordinate space as y_grid
-            height (array): Heights of peaks
-            width (array): Widths of peaks
-            *args: Additional arguments for specific peak models
             local (bool, optional): If True, calculate peaks locally within a fixed window. Defaults to False.
             
         Returns:
             array: Sum of all peaks plus background
         """
+        kargs = []
+        if hasattr(self, 'ratio'):
+            kargs.append(self.ratio)
+
         if not local:
             # Calculate all peaks at once and sum them
             peaks = self.model_fn(
                 x_grid[:, :, None], y_grid[:, :, None],
-                pos_x[None, None, :], pos_y[None, None, :],
-                height, width, *kargs
+                self.pos_x[None, None, :], self.pos_y[None, None, :],
+                self.height, self.width, *kargs
             )
             return ops.sum(peaks, axis=-1) + self.background
         else:
             # Local calculation with parallel processing
-            width_max = ops.max(width) 
-            # Window size in pixels
-            window_size = int(5 * width_max)  # Fixed window size of 5*width in grid units
-            if window_size % 2 == 0:
-                window_size += 1  # Ensure odd window size for centered peak
+            width_max = ops.max(self.width) 
+            window_size = ops.cast(ops.ceil(width_max * 4), dtype="int32")
+
+            # Create a local coordinate grid for the window
+            window_x = ops.arange(-window_size, window_size + 1, dtype=x_grid.dtype)
+            window_y = ops.arange(-window_size, window_size + 1, dtype=y_grid.dtype)
+            local_x_grid, local_y_grid = ops.meshgrid(window_x, window_y)
+
+            # Calculate local peaks relative to their centers (0,0)
+            # The positions are implicitly handled by where we add the peaks back.
+            input_params = (ops.mod(self.pos_x, 1), ops.mod(self.pos_y, 1), self.height, self.width)
+            if hasattr(self, 'ratio'):
+                input_params += (self.ratio,)
             
-            half_size = window_size // 2
+            peak_local = self.model_fn(local_x_grid[..., None], local_y_grid[..., None], *input_params)
+
+            # Calculate integer base coordinates for each peak
+            pos_x_int = ops.floor(self.pos_x)
+            pos_y_int = ops.floor(self.pos_y)
+
+            # Calculate the global coordinates for each point in each local peak window
+            global_x = ops.expand_dims(local_x_grid, -1) + pos_x_int
+            global_y = ops.expand_dims(local_y_grid, -1) + pos_y_int
+
+            # Create a mask for coordinates that are within the image boundaries
+            mask = (global_x >= 0) & (global_x < x_grid.shape[1]) & (global_y >= 0) & (global_y < y_grid.shape[0])
+
+            # Get the indices of valid elements where the mask is True.
+            valid_indices = ops.where(mask)
             
-            # Create fixed-size local window coordinates
-            window_x = ops.arange(-half_size, half_size + 1)
-            window_y = ops.arange(-half_size, half_size + 1)
-            window_x_grid, window_y_grid = ops.meshgrid(window_x, window_y)
+            # Flatten the mask to get 1D indices of valid elements.
+            flat_indices = ops.where(ops.reshape(mask, (-1,)))[0]
+
+            # Gather the valid data from the flattened tensors using the 1D indices.
+            valid_values = ops.take(ops.reshape(peak_local, (-1,)), flat_indices)
+            global_x_valid = ops.take(ops.reshape(global_x, (-1,)), flat_indices)
+            global_y_valid = ops.take(ops.reshape(global_y, (-1,)), flat_indices)
+
+            # The column indices correspond to the third dimension of the original tensors.
+            cols_tensor = valid_indices[2]
+
+            # Create the final image tensor
+            total = ops.zeros_like(x_grid, dtype=x_grid.dtype)
             
-            # Calculate all local peaks in parallel
-            # Reshape window coordinates to (window_size^2, 2) for broadcasting
-            window_coords = ops.stack([window_x_grid.flatten(), window_y_grid.flatten()], axis=-1)
-            
-            # Calculate global indices for each peak
-            x_indices = ops.cast(
-                ops.round((pos_x - x_grid[0, 0])),
-                dtype='int32'
-            )
-            y_indices = ops.cast(
-                ops.round((pos_y - y_grid[0, 0])),
-                dtype='int32'
-            )
-            
-            # Calculate actual coordinates for each window point relative to peak centers
-            peak_coords = ops.stack([x_indices, y_indices], axis=-1)  # Shape: (n_peaks, 2)
-            window_offsets = window_coords[None, :, :]  # Shape: (1, window_size^2, 2)
-            peak_centers = peak_coords[:, None, :]  # Shape: (n_peaks, 1, 2)
-            
-            # Global coordinates for all window points for all peaks
-            # Shape: (n_peaks, window_size^2, 2)
-            global_coords = peak_centers + window_offsets
-            
-            # Calculate valid mask for points within image bounds
-            valid_x = (global_coords[..., 0] >= 0) & (global_coords[..., 0] < x_grid.shape[1])
-            valid_y = (global_coords[..., 1] >= 0) & (global_coords[..., 1] < x_grid.shape[0])
-            valid_mask = valid_x & valid_y
-            
-            # Calculate local peaks using model_fn on window coordinates
-            local_peaks = self.model_fn(
-                window_x_grid[None, :, :],  # Shape: (1, window_size, window_size)
-                window_y_grid[None, :, :],  # Shape: (1, window_size, window_size)
-                ops.zeros_like(pos_x)[:, None, None],  # Center each peak at (0,0)
-                ops.zeros_like(pos_y)[:, None, None],
-                height[:, None, None],
-                width if isinstance(width, (float, int)) else width[:, None, None],
-                *[arg if isinstance(arg, (float, int)) else arg[:, None, None] for arg in kargs]
-            )
-            
-            # Initialize output array with background
-            total = ops.zeros_like(x_grid) + self.background
-            
-            # Add each peak's contribution to the total at the correct positions
-            local_peaks_flat = local_peaks.reshape(pos_x.shape[0], -1)  # Flatten window dimensions
-            
-            # Use backend-specific optimized scatter operations for parallel processing
+            # Use the backend to scatter the local peaks onto the global image
             backend = keras.backend.backend()
-            
-
-            coords_flat = global_coords.reshape(-1, 2)  # Shape: (n_peaks * window_size^2, 2)
-            values_flat = local_peaks_flat.reshape(-1)  # Shape: (n_peaks * window_size^2,)
-            valid_mask_flat = valid_mask.reshape(-1)  # Shape: (n_peaks * window_size^2,)
-            
-            valid_coords = coords_flat[valid_mask_flat]
-            valid_values = values_flat[valid_mask_flat]
-            
-
-            if backend == 'tensorflow':
-                import tensorflow as tf
-                if ops.size(total) != ops.prod(ops.shape(total)):
-                    raise ValueError("The shape of 'total' is incompatible for reshaping into a flat array.")
-                total_flat = ops.reshape(total, (-1,))
-                values_tf = tf.convert_to_tensor(valid_values, dtype=tf.float32)
-                
-                coords_tf = tf.stack([valid_coords[:, 1], valid_coords[:, 0]], axis=1)
-                total = tf.tensor_scatter_nd_add(total_flat, coords_tf, values_tf)
-            elif backend == 'torch':
-    
-                # Convert 2D coordinates to 1D indices for scatter
-                indices = (valid_coords[:, 1] * total.shape[1] + valid_coords[:, 0]).long()
+            if backend == 'torch':
+                import torch
+                # Calculate flat indices for scatter_add
+                indices = (ops.cast(global_y_valid, dtype='int64') * total.shape[1] + ops.cast(global_x_valid, dtype='int64'))
                 
                 total_flat = total.flatten()
-                total_flat.scatter_add_(0, indices, valid_values)
+                # Use a non-in-place operation to help PyTorch's autograd manage memory
+                total_flat = total_flat.scatter_add(0, indices, valid_values)
                 total = total_flat.reshape(total.shape)
             elif backend == 'jax':
                 import jax.numpy as jnp
-                total_jax = jnp.array(total)
-                global_coords_jax = jnp.array(valid_coords)
-                valid_values_jax = jnp.array(valid_values)
-                total = total_jax.at[global_coords_jax[:, 1], global_coords_jax[:, 0]].add(valid_values_jax)
-            return total
+                # JAX uses a different approach for indexed updates
+                indices = (ops.cast(global_y_valid, 'int32'), ops.cast(global_x_valid, 'int32'))
+                total = total.at[indices].add(valid_values)
+            else: # tensorflow
+                import tensorflow as tf
+                # TensorFlow uses tensor_scatter_nd_add
+                indices = ops.stack([ops.cast(global_y_valid, dtype='int32'), ops.cast(global_x_valid, dtype='int32')], axis=-1)
+                total = tf.tensor_scatter_nd_add(total, indices, valid_values)
 
-    def sum(self, x_grid, y_grid, pos_x, pos_y, height, width, *kargs, local=False):
+            return total + self.background
+
+    def sum(self, x_grid, y_grid, local=False):
         """Calculate sum of peaks using Keras.
         
         Args:
             x_grid (array): x_grid coordinates mesh
             y_grid (array): y_grid coordinates mesh
-            pos_x (array): x_grid positions of peaks
-            pos_y (array): y_grid positions of peaks
-            height (array): Heights of peaks
-            width (array): Widths of peaks
-            *args: Additional arguments for specific peak models
             local (bool, optional): If True, calculate peaks locally within a fixed window. Defaults to False.
             
         Returns:
             array: Sum of all peaks plus background
         """
-        return self._sum(x_grid, y_grid, pos_x, pos_y, height, width, *kargs, local=local)
+        return self._sum(x_grid, y_grid, local=local)
 
 class GaussianModel(ImageModel):
     """Gaussian peak model."""
@@ -240,6 +207,29 @@ class LorentzianModel(ImageModel):
 
 class VoigtModel(ImageModel):
     """Voigt peak model."""
+
+    def __init__(self, dx: float=1.0, background: float=0.0):
+        """Initialize the model.
+        
+        Args:
+            dx (float, optional): Pixel size. Defaults to 1.0.
+            background (float, optional): Background level. Defaults to 0.0.
+        """
+        super().__init__(dx, background)
+        # self.model_type = "voigt"
+
+    def set_params(self, params):
+        super().set_params(params)
+        self.ratio = self.initial_params['ratio']
+
+    def build(self, input_shape):
+        super().build(input_shape)
+        self.ratio = self.add_weight(shape=(), initializer=keras.initializers.Constant(self.initial_params['ratio']), name="ratio")
+
+    def get_params(self):
+        params = super().get_params()
+        params['ratio'] = ops.convert_to_tensor(self.ratio)
+        return params
 
     def volume(self, params: dict) -> np.ndarray:
         """Calculate the volume of each Voigt peak.
