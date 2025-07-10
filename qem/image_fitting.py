@@ -1115,7 +1115,7 @@ class ImageFitting:
         """
         if params is None:
             if self.params is not None:
-                if 'pos_x' in self.params and 'pos_y' in self.params and self.params["pos_x"].size > 0:
+                if 'pos_x' in self.params and 'pos_y' in self.params:
                     params = self.params
                 else:
                     params = self.init_params()
@@ -1124,22 +1124,28 @@ class ImageFitting:
 
         pos_x = params["pos_x"]
         pos_y = params["pos_y"]
-        coords = np.stack([pos_y, pos_x])
+        coords = ops.stack([pos_y, pos_x])
+        num_coordinates = coords.shape[1]
 
         # Generate Voronoi cell map
         if max_radius is None:
-            max_radius = self.params["width"].max() * 3
-        point_record = voronoi_point_record(self.image,coords, max_radius)
+            max_radius = params["width"].max() * 3
+            
+        image = ops.convert_to_numpy(self.image)
+        max_radius = ops.convert_to_numpy(max_radius)
+        coords = ops.convert_to_numpy(coords)
+
+        point_record = voronoi_point_record(image,coords, max_radius)
 
         # Prepare per-cell fitting function
         def fit_cell(index, params):
             mask = point_record == index + 1
-            if not np.any(mask):
+            if not ops.any(mask):
                 return None  # No pixels in this cell
 
-            cell_img = self.image * mask
+            cell_img = image * mask
             # Crop to bounding box for efficiency
-            ys, xs = np.where(mask)
+            ys, xs = ops.where(mask)
             y0, y1 = ys.min(), ys.max() + 1
             x0, x1 = xs.min(), xs.max() + 1
             cropped_img = cell_img[y0:y1, x0:x1]
@@ -1151,18 +1157,20 @@ class ImageFitting:
             cropped_img[~cropped_mask] = 0
 
             # Prepare grid for fitting
-            Xc, Yc = np.meshgrid(np.arange(x0, x1), np.arange(y0, y1), indexing="xy")
+            Xc, Yc = ops.meshgrid(ops.arange(x0, x1), ops.arange(y0, y1), indexing="xy")
+            Xc = ops.convert_to_numpy(Xc)
+            Yc = ops.convert_to_numpy(Yc)
 
             # Prepare initial params for this cell
             local_param = {}
-            local_param['pos_x'] = np.array([params['pos_x'][index]])
-            local_param['pos_y'] = np.array([params['pos_y'][index]])
-            local_param['height'] = params['height'][index] - local_min
-            local_param['width'] = params['width']
-            local_param['background'] = np.array([0.0])
+            local_param['pos_x'] = ops.convert_to_numpy([params['pos_x'][index]])
+            local_param['pos_y'] = ops.convert_to_numpy([params['pos_y'][index]])
+            local_param['height'] = ops.convert_to_numpy(params['height'][index] + params['background'] - local_min)
+            local_param['width'] = ops.convert_to_numpy(params['width'])
+            local_param['background'] = ops.convert_to_numpy([0.0])
             self.fit_background = False
 
-            atoms_selected = np.zeros(self.num_coordinates, dtype=bool)
+            atoms_selected = ops.zeros(self.num_coordinates, dtype=bool)
             atoms_selected[index] = True
 
             p0 = [
@@ -1192,11 +1200,11 @@ class ImageFitting:
             #     popt = p0
 
             optimized_param = {
-                'pos_x': np.array([popt[0]]),
-                'pos_y': np.array([popt[1]]),
+                'pos_x': [popt[0]],
+                'pos_y': [popt[1]],
                 'height': popt[2],
                 'width': popt[3],
-                'background': np.array([popt[4]])
+                'background': [popt[4]]
             }
             return optimized_param, index
 
@@ -1210,8 +1218,8 @@ class ImageFitting:
             pre_params = {key: ops.convert_to_numpy(value) for key, value in pre_params.items()}
         while not converged:
             with ThreadPoolExecutor() as executor:
-                futures = [executor.submit(fit_cell, i, current_params) for i in range(pos_x.size)]
-                for future in tqdm(as_completed(futures), total=pos_x.size, desc="Fitting cells"):
+                futures = [executor.submit(fit_cell, i, current_params) for i in range(num_coordinates)]
+                for future in tqdm(as_completed(futures), total=num_coordinates, desc="Fitting cells"):
                     result = future.result()
                     if result is None:
                         continue
@@ -1248,7 +1256,7 @@ class ImageFitting:
                 continue  # Skip keys that are not in pre_params
 
             # Calculate the update difference
-            update = np.abs(value - pre_params[key])
+            update = ops.abs(value - pre_params[key])
 
             # Check convergence based on parameter type
             if key in ["pos_x", "pos_y"]:
@@ -1260,7 +1268,7 @@ class ImageFitting:
             else:
                 # Avoid division by zero and calculate relative update
                 value_with_offset = value + 1e-10
-                rate = np.abs(update / value_with_offset).mean()
+                rate = ops.abs(update / value_with_offset).mean()
                 logging.info(f"Convergence rate for {key} = {rate}")
                 if rate > tol:
                     logging.info("Convergence not reached")
