@@ -1043,6 +1043,10 @@ class ImageFitting:
         )
         self.params = params
         self.prediction = self.predict(params)
+        # move prediction to cpu
+        if self.backend == "torch":
+            self.prediction = self.prediction.cpu().numpy()
+
         return params
 
     def fit_stochastic(
@@ -1111,7 +1115,10 @@ class ImageFitting:
         self.converged = self.convergence(params, pre_params, tol)
         params = self.linear_estimator(params)
         self.params = params
-        self.prediction = self.predict(params,local=True)
+        self.prediction = self.predict(params)
+        if self.backend == "torch":
+            self.prediction = self.prediction.cpu().numpy()
+
         return params
 
     def fit_voronoi(
