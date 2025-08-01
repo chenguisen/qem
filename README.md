@@ -54,9 +54,16 @@
 ## About The Project
 
 <!-- [![Product Name Screen Shot][product-screenshot]](https://github.com/zezhong-zhang/qem) -->
-QEM is inspired by [StatSTEM](https://github.com/quantitativeTEM/StatSTEM), aiming to provide robust, fast and user-friendly quantification for advanced microscopy. The main usage of QEM is to refine scattering cross-sections, atomic positions and number of atoms for each atomic columns. By building accurate atomic models, we can link the workflow between electron microscopy and computational materials science. The computation is accelerated with GPU parallel computing via [JAX](https://jax.readthedocs.io/en/latest/index.html).
+QEM provides a robust, fast, and user-friendly toolkit for quantitative analysis in advanced microscopy. Its primary goal is to build highly accurate atomic models by refining structural parameters directly from experimental data, effectively linking electron microscopy with computational materials science.
 
-This repo is currently under heavy development. 
+Key Features
+- Atomic Model Refinement: Precisely determine scattering cross-sections, atomic positions, and the number of atoms for each atomic column.
+- High-Performance Computing: Achieves significant speed-ups through GPU acceleration.
+- Flexible Backend: Built on [Keras](https://keras.io/), it supports multiple backends like [JAX](https://docs.jax.dev/en/latest/), [TensorFlow](https://www.tensorflow.org), and [PyTorch](https://pytorch.org/), giving users the freedom to choose their preferred framework.
+- Bridging Fields: Creates a seamless workflow between experimental microscopy and computational materials modeling via [ASE](https://wiki.fysik.dtu.dk/ase/).
+
+
+The project is a Python-based evolution of the well-regarded [StatSTEM](https://github.com/quantitativeTEM/StatSTEM). You may also want to check [Atomap](https://atomap.org/) serving similar functions. This repo aims to go beyond state-of-the-art and is currently under heavy development.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -101,7 +108,7 @@ cd examples
 <!-- ROADMAP -->
 ## Roadmap
 ### TO-DO list
-- [ ] Model based on Keras to support different backend (Tensorflow, PyTorch, JAX)
+- [x] Model based on Keras to support different backend (Tensorflow, PyTorch, JAX)
 - [ ] Test the code on Windows
 - [ ] Improve Gaussian mixture model and selection rule
 - [ ] Atom counting based on simulated library
