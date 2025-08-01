@@ -12,28 +12,47 @@ from keras import ops
 class ImageModel(keras.Model):
     """Base class for all image models."""
 
-    def __init__(self, dx: float=1.0, background: float=0.0):
+    def __init__(self, dx: float=1.0):
         """Initialize the model.
         
         Args:
             dx (float, optional): Pixel size. Defaults to 1.0.
-            background (float, optional): Background level. Defaults to 0.0.
         """
         super().__init__()
         self.dx = dx
-        self.background = background
+        self.input_params = None
             
     def set_params(self, params):
-        self.initial_params = {k: keras.backend.convert_to_tensor(v) for k, v in params.items()}
+        # Set params as tensors, but do not build variables yet
+        self.input_params = {k: keras.ops.convert_to_tensor(v) for k, v in params.items()}
+        # If already built and shapes match, update values
+        if self.built:
+            self.update_params(self.input_params)
 
+    def update_params(self, params):
+        """Update the model parameters (values only, not shapes)."""
+        for key, value in params.items():
+            if hasattr(self, key):
+                current_value = getattr(self, key)
+                if isinstance(current_value, keras.Variable):
+                    current_value.assign(value)
+                else:
+                    setattr(self, key, value)
+            else:
+                raise ValueError(f"Parameter {key} does not exist in the model.")
 
     def build(self, input_shape):
-        """Create and initialize trainable weights for the model."""
-        self.pos_x = self.add_weight(shape=(self.initial_params['pos_x'].shape[0],), initializer=keras.initializers.Constant(self.initial_params['pos_x']), name="pos_x")
-        self.pos_y = self.add_weight(shape=(self.initial_params['pos_y'].shape[0],), initializer=keras.initializers.Constant(self.initial_params['pos_y']), name="pos_y")
-        self.height = self.add_weight(shape=(self.initial_params['height'].shape[0],), initializer=keras.initializers.Constant(self.initial_params['height']), name="height")
-        self.width = self.add_weight(shape=(self.initial_params['width'].shape[0],), initializer=keras.initializers.Constant(self.initial_params['width']), name="width")
-        self.background = self.add_weight(shape=(), initializer=keras.initializers.Constant(self.initial_params['background']), name="background")
+        if self.input_params is None:
+            raise ValueError("initial_params must be set before building the model.")
+        # If already built and shapes match, do nothing
+        if self.built:
+            return
+        # Otherwise, create new variables
+        self.pos_x = self.add_weight(shape=(self.input_params['pos_x'].shape[0],), initializer=keras.initializers.Constant(self.input_params['pos_x']), name="pos_x")
+        self.pos_y = self.add_weight(shape=(self.input_params['pos_y'].shape[0],), initializer=keras.initializers.Constant(self.input_params['pos_y']), name="pos_y")
+        self.height = self.add_weight(shape=(self.input_params['height'].shape[0],), initializer=keras.initializers.Constant(self.input_params['height']), name="height")
+        self.width = self.add_weight(shape=(self.input_params['width'].shape[0],), initializer=keras.initializers.Constant(self.input_params['width']), name="width")
+        self.background = self.add_weight(shape=(), initializer=keras.initializers.Constant(self.input_params['background']), name="background")
         super().build(input_shape)
         
     def get_params(self):
@@ -219,11 +238,11 @@ class VoigtModel(ImageModel):
 
     def set_params(self, params):
         super().set_params(params)
-        self.ratio = self.initial_params['ratio']
+        self.ratio = self.input_params['ratio']
 
     def build(self, input_shape):
         super().build(input_shape)
-        self.ratio = self.add_weight(shape=(), initializer=keras.initializers.Constant(self.initial_params['ratio']), name="ratio")
+        self.ratio = self.add_weight(shape=(), initializer=keras.initializers.Constant(self.input_params['ratio']), name="ratio")
 
     def get_params(self):
         params = super().get_params()

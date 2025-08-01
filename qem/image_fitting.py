@@ -117,24 +117,16 @@ class ImageFitting:
         self.x_grid = ops.convert_to_tensor(x_grid, dtype="float32")
         self.y_grid = ops.convert_to_tensor(y_grid, dtype="float32")
 
-    def _create_model(self, params=None):
+    def _create_model(self):
         """Create a new model instance based on the model type."""
-        if params is None:
-            background = 0.0
-        else:
-            background = params.get("background", 0.0)
-        # Pass the full params dictionary and the specific background value
         if self.model_type == "gaussian":
-            model = GaussianModel(dx=float(self.dx), background=background)
+            model = GaussianModel(dx=float(self.dx))
         elif self.model_type == "lorentzian":
-            model = LorentzianModel(dx=float(self.dx), background=background)
+            model = LorentzianModel(dx=float(self.dx))
         elif self.model_type == "voigt":
-            model = VoigtModel(dx=float(self.dx), background=background)
+            model = VoigtModel(dx=float(self.dx))
         else:
             raise ValueError(f"Model type {self.model_type} not supported.")
-        if params is not None:
-            model.set_params(params)
-            model.build(model.num_coordinates)
         return model
     
     def predict(self, local: bool = False):
@@ -167,9 +159,9 @@ class ImageFitting:
         Returns:
             numpy.ndarray: A Butterworth-style window used for fitting.
         """
-        if self._window is  None:
+        if self._window is None:
             window = butterworth_window(self.image.shape, 0.5, 10)
-            window = ops.convert_to_tensor(window, dtype="float32")
+            # window = keras.ops.convert_to_tensor(window, dtype="float32")
             self._window = window
         return self._window
 
@@ -376,7 +368,7 @@ class ImageFitting:
             )
 
         self.params = params
-        self.model.set_params(params)
+        self.model.set_params(self.params)
         self.model.build(self.num_coordinates)
         return params
 
@@ -958,6 +950,7 @@ class ImageFitting:
         if image_tensor is None:
             image_tensor = self.image_tensor
         self.model.set_params(params)
+        self.model.build(self.num_coordinates)
         self.model.compile(optimizer=keras.optimizers.Adam(learning_rate=step_size),
             loss=self.loss)
         early_stopping = keras.callbacks.EarlyStopping(
@@ -981,7 +974,6 @@ class ImageFitting:
     ):
         if params is None:
             params = self.params if self.params is not None else self.init_params()
-        self._create_model(params)
         params = self.optimize(
             image_tensor=self.image_tensor, params=params, maxiter=maxiter, tol=tol, step_size=step_size, verbose=verbose
         )
@@ -1008,8 +1000,6 @@ class ImageFitting:
             params = self.params if self.params is not None else self.init_params()
 
         self.converged = False
-        self._create_model(params)
-        # params = self.linear_estimator(params)
         while self.converged is False and num_epoch > 0:
             params = self.linear_estimator(params)
             pre_params = copy.deepcopy(params)
@@ -1021,20 +1011,22 @@ class ImageFitting:
 
 
             for index in tqdm(random_batches, desc="Fitting random batch"):
+                current_params = copy.deepcopy(params)
                 atoms_selected = np.zeros(self.num_coordinates, dtype=bool)
                 atoms_selected[index] = True
                 select_params = self.select_params(params, atoms_selected)
-                self.model.set_params(select_params)
 
-                global_prediction = self.predict(params)
-                local_prediction = self.predict(select_params,atoms_selected=atoms_selected)
+                self.model.set_params(params)
+                global_prediction = self.predict(local=True)
+                self.model.set_params(select_params)
+                local_prediction = self.predict(local=True)
                 local_residual = global_prediction - local_prediction
                 local_target = ops.stop_gradient(image - local_residual)
                 optimized_select_params = self.optimize(
                     local_target, select_params, maxiter=maxiter, tol=tol, step_size=step_size, verbose=verbose
                 )
-                cliped_optimized_select_params = self.project_params(optimized_select_params)
-                params = self.update_from_local_params(params, cliped_optimized_select_params, atoms_selected)
+                clipped_optimized_select_params = self.clip_params(optimized_select_params)                
+                params = self.update_from_local_params(current_params, clipped_optimized_select_params, atoms_selected)
                 if plot:
                     plt.subplots(1, 3, figsize=(15, 5))
                     plt.subplot(1, 3, 1)
@@ -1263,6 +1255,7 @@ class ImageFitting:
         self, params: dict, local_params: dict, mask: np.ndarray, mask_local=None
     ):
         for key, value in local_params.items():
+            # Always convert to tensor (JAX or NumPy) to avoid deleted array refs
             value = ops.convert_to_tensor(value)
             shared_value_list = ["background"]
             if self.same_width:
@@ -1270,22 +1263,22 @@ class ImageFitting:
             if key not in shared_value_list:
                 if keras.backend.backend() == "jax":
                     if mask_local is None:
+                        # Use .at[mask].set(value) for JAX, but assign the result!
                         params[key] = params[key].at[mask].set(value)
                     else:
                         params[key] = params[key].at[mask].set(value[mask_local])
                 else:
                     if mask_local is None:
-                        params[key] = value
+                        params[key][mask] = value.copy()  # <-- ensure copy
                     else:
-                        params[key] = value[mask_local]
+                        params[key][mask] = value[mask_local].copy()
             else:
                 weight = mask.sum() / self.num_coordinates
                 update = value - params[key]
                 params[key] = params[key] + update * weight
-                # params[key] = value
         return params
 
-    def project_params(self, params: dict):
+    def clip_params(self, params: dict):
         for key, value in params.items():
             if key == "pos_x":
                 params[key] = ops.clip(value, 0, self.nx - 1)
