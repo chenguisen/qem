@@ -1,4 +1,4 @@
-qem/archieve/
+qem/archive/
 qem/__pycache__/
 tests/__pycache__/
 .vscode/
@@ -34,5 +34,4 @@ data/SRO-CTO/
 examples/superlattice_adf.h5
 examples/crystal_analyzer.ipynb
 examples/CTO-SRO.ipynb
-data/ETO_KTO/
-data/STO/
+.env
