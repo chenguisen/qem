@@ -428,3 +428,51 @@ def broadcast_from_unmeshed(coords):
 
     # Broadcast unmeshed grids
     return [np.broadcast_to(a.reshape(rr), pixels) for a, rr in zip(coords, R)]
+
+# Backend-safe tensor conversion utilities
+def safe_convert_to_numpy(tensor):
+    """
+    Safely convert a Keras tensor to numpy array, handling different backends.
+    
+    Args:
+        tensor: Keras tensor or numpy array
+        
+    Returns:
+        numpy.ndarray: The tensor converted to numpy array
+    """
+    import keras
+    from keras import ops
+    
+    if isinstance(tensor, np.ndarray):
+        return tensor
+    
+    backend = keras.backend.backend()
+    
+    if backend == "torch":
+        # PyTorch backend requires detach().cpu().numpy()
+        if hasattr(tensor, 'detach'):
+            return tensor.detach().cpu().numpy()
+        else:
+            # Fallback to ops.convert_to_numpy for non-gradient tensors
+            return ops.convert_to_numpy(tensor)
+    elif backend == "jax":
+        # JAX backend can use ops.convert_to_numpy directly
+        return ops.convert_to_numpy(tensor)
+    else:
+        # TensorFlow backend
+        return ops.convert_to_numpy(tensor)
+
+
+def safe_convert_to_tensor(array, dtype="float32"):
+    """
+    Safely convert a numpy array to Keras tensor.
+    
+    Args:
+        array: numpy array or tensor
+        dtype: target dtype for the tensor
+        
+    Returns:
+        Keras tensor
+    """
+    from keras import ops
+    return ops.convert_to_tensor(array, dtype=dtype)

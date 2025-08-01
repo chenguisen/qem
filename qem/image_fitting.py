@@ -37,12 +37,13 @@ from qem.model import (
 from qem.processing import butterworth_window
 from qem.refine import calculate_center_of_mass
 from qem.region import Regions
-from qem.utils import get_random_indices_in_batches, remove_close_coordinates
+from qem.utils import get_random_indices_in_batches, remove_close_coordinates, safe_convert_to_numpy, safe_convert_to_tensor
 from qem.voronoi import voronoi_integrate, voronoi_point_record
 
 
-
 logging.basicConfig(level=logging.INFO)
+
+
 
 class ImageFitting:
     def __init__(
@@ -111,8 +112,8 @@ class ImageFitting:
     def initialize_grid(self):
         """Initialize the coordinate grids for the model."""
         self.image_tensor = ops.convert_to_tensor(self.image, dtype="float32")
-        x = ops.arange(self.nx, dtype='float32')
-        y = ops.arange(self.ny, dtype='float32')
+        x = ops.arange(self.nx, dtype="float32")
+        y = ops.arange(self.ny, dtype="float32")
         x_grid, y_grid = ops.meshgrid(x, y)
         self.x_grid = ops.convert_to_tensor(x_grid, dtype="float32")
         self.y_grid = ops.convert_to_tensor(y_grid, dtype="float32")
@@ -128,8 +129,8 @@ class ImageFitting:
         else:
             raise ValueError(f"Model type {self.model_type} not supported.")
         return model
-    
-    def predict(self, local: bool = False):
+
+    def predict(self, local: bool = True):
         """Predict the image based on the model's current parameters.
 
         Args:
@@ -138,15 +139,23 @@ class ImageFitting:
         Returns:
             array: Predicted image
         """
-        prediction = self.model.sum(self.x_grid, self.y_grid, local=local)
+        self.model.set_grid(self.x_grid, self.y_grid)
+        prediction = self.model.sum(local=local)
 
         # Handle periodic boundary conditions by rolling the image
         if self.pbc:
-            for i, j in [(1, 0), (0, 1), (-1, 0), (0, -1), 
-                        (1, 1), (-1, -1), (1, -1), (-1, 1)]:
-                prediction += self.model.sum(
-                    self.x_grid + i * self.nx, self.y_grid + j * self.ny, local=local
-                )
+            for i, j in [
+                (1, 0),
+                (0, 1),
+                (-1, 0),
+                (0, -1),
+                (1, 1),
+                (-1, -1),
+                (1, -1),
+                (-1, 1),
+            ]:
+                self.model.set_grid(self.x_grid + i * self.nx, self.y_grid + j * self.ny) 
+                prediction += self.model.sum(local=local)
         return prediction
 
     # Properties
@@ -161,7 +170,6 @@ class ImageFitting:
         """
         if self._window is None:
             window = butterworth_window(self.image.shape, 0.5, 10)
-            # window = keras.ops.convert_to_tensor(window, dtype="float32")
             self._window = window
         return self._window
 
@@ -180,8 +188,10 @@ class ImageFitting:
 
         # Create parameters dict for volume calculation
         params = self.params.copy()
-
-        return self.model.volume(params)
+        volume =self.model.volume(params) 
+        if keras.backend.backend() == "torch":
+            volume = volume.detach().cpu().numpy()
+        return volume
 
     @property
     def scalebar(self):
@@ -195,7 +205,7 @@ class ImageFitting:
         return scalebar
 
     # voronoi integration
-    def voronoi_integration(self, max_radius:float = None, plot=False):
+    def voronoi_integration(self, max_radius: float = None, plot=False):
         """
         Compute the Voronoi integration of the atomic columns.
 
@@ -250,7 +260,7 @@ class ImageFitting:
                 i_r = np.minimum(self.coordinates[i, 0] + n, self.nx).astype(np.int32)
                 i_u = np.maximum(self.coordinates[i, 1] - n, 0).astype(np.int32)
                 i_d = np.minimum(self.coordinates[i, 1] + n, self.ny).astype(np.int32)
-                influence_map[i_l: i_r + 1, i_u: i_d + 1] = 1
+                influence_map[i_l : i_r + 1, i_u : i_d + 1] = 1
             if n == 0:
                 rate = (np.sum(influence_map) - n_filled) / num_coordinates
             else:
@@ -272,14 +282,14 @@ class ImageFitting:
             i_r = np.minimum(self.coordinates[i, 0] + n1, nx).astype(np.int32)
             i_u = np.maximum(self.coordinates[i, 1] - n1, 0).astype(np.int32)
             i_d = np.minimum(self.coordinates[i, 1] + n1, ny).astype(np.int32)
-            influence_map[i_l: i_r + 1, i_u: i_d + 1] = 1
+            influence_map[i_l : i_r + 1, i_u : i_d + 1] = 1
 
             # Calculate the indices for the smaller area (direct_influence_map)
             i_l = np.maximum(self.coordinates[i, 0] - n2, 0).astype(np.int32)
             i_r = np.minimum(self.coordinates[i, 0] + n2, nx).astype(np.int32)
             i_u = np.maximum(self.coordinates[i, 1] - n2, 0).astype(np.int32)
             i_d = np.minimum(self.coordinates[i, 1] + n2, ny).astype(np.int32)
-            direct_influence_map[i_l: i_r + 1, i_u: i_d + 1] = 1
+            direct_influence_map[i_l : i_r + 1, i_u : i_d + 1] = 1
 
         radius = (np.sum(direct_influence_map) / num_coordinates) ** (1 / 2) / np.pi
 
@@ -318,8 +328,8 @@ class ImageFitting:
         # Initialize position and height parameters
         pos_x = copy.deepcopy(self.coordinates[:, 0]).astype(float)
         pos_y = copy.deepcopy(self.coordinates[:, 1]).astype(float)
-        pos_x = np.clip(pos_x,0,self.image.shape[0]-1)
-        pos_y = np.clip(pos_y,0,self.image.shape[1]-1)
+        pos_x = np.clip(pos_x, 0, self.image.shape[0] - 1)
+        pos_y = np.clip(pos_y, 0, self.image.shape[1] - 1)
 
         # Initialize background
         if self.fit_background:
@@ -363,9 +373,7 @@ class ImageFitting:
             params["background"] = init_background
 
         for key in params.keys():
-            params[key] = ops.convert_to_tensor(
-                params[key], dtype='float32'
-            )
+            params[key] = ops.convert_to_tensor(params[key], dtype="float32")
 
         self.params = params
         self.model.set_params(self.params)
@@ -374,7 +382,7 @@ class ImageFitting:
 
     # find atomic columns
     def import_coordinates(self, coordinates: np.ndarray):
-        self.coordinates = coordinates[:,:2]
+        self.coordinates = coordinates[:, :2]
 
     def find_peaks(
         self,
@@ -477,7 +485,9 @@ class ImageFitting:
         #     crystal_analyzer.unit_cell = unit_cell
         if cif_file is not None:
             crystal_analyzer.read_cif(cif_file)
-        atomic_column_list = crystal_analyzer.get_atomic_columns(reciprocal=reciprocal, sigma=sigma)
+        atomic_column_list = crystal_analyzer.get_atomic_columns(
+            reciprocal=reciprocal, sigma=sigma
+        )
         # remove the self.coordinates in the column mask and append the new coordinates find in the atomic_column_list
         coordinates = np.delete(self.coordinates, np.where(column_mask), axis=0)
         coordinates = np.vstack([coordinates, atomic_column_list.positions_pixel])
@@ -555,14 +565,14 @@ class ImageFitting:
         )
         distances = np.linalg.norm(other_peaks - peak_position, axis=1).min()
         return distances
-    
-    def refine_center_of_mass(self, params = None, plot=False):
+
+    def refine_center_of_mass(self, params=None, plot=False):
         # Refine center of mass for each Voronoi cell
         pre_coordinates = self.coordinates.copy()
         current_coordinates = self.coordinates.copy()
         converged = False
 
-        if params is None and hasattr(self, 'params') and len(self.params)>0:
+        if params is None and hasattr(self, "params") and len(self.params) > 0:
             params = self.params
         elif params is None:
             params = self.init_params()
@@ -572,14 +582,17 @@ class ImageFitting:
             max_radius = params["width"].max() * 5
             point_record = voronoi_point_record(self.image, coords, max_radius)
 
-   
             # In refine_center_of_mass, replace the for-loop with:
             with ThreadPoolExecutor() as executor:
                 futures = [
                     executor.submit(self._refine_one_center, i, point_record, plot)
                     for i in range(self.num_coordinates)
                 ]
-                for future in tqdm(as_completed(futures), total=self.num_coordinates, desc="Refining center of mass"):
+                for future in tqdm(
+                    as_completed(futures),
+                    total=self.num_coordinates,
+                    desc="Refining center of mass",
+                ):
                     result, i = future.result()
                     if result is not None:
                         current_coordinates[i] = result
@@ -611,7 +624,9 @@ class ImageFitting:
 
         # Normalize for center of mass
         if cropped_img[cropped_mask].max() > 0:
-            norm_img = (cropped_img - cropped_img[cropped_mask].min()) / (cropped_img[cropped_mask].max() - cropped_img[cropped_mask].min())
+            norm_img = (cropped_img - cropped_img[cropped_mask].min()) / (
+                cropped_img[cropped_mask].max() - cropped_img[cropped_mask].min()
+            )
         else:
             norm_img = cropped_img
         norm_img[~cropped_mask] = 0
@@ -620,10 +635,13 @@ class ImageFitting:
         local_y, local_x = calculate_center_of_mass(norm_img)
         assert isinstance(local_x, float), "local_x is not a float"
         assert isinstance(local_y, float), "local_y is not a float"
-        result = np.array([
-            x0 + local_x,
-            y0 + local_y,
-        ], dtype=float)
+        result = np.array(
+            [
+                x0 + local_x,
+                y0 + local_y,
+            ],
+            dtype=float,
+        )
 
         if plot:
             plt.clf()
@@ -709,7 +727,16 @@ class ImageFitting:
             coords_boundary = coords[mask_boundary]
             # identify the coords in the coords_boundary that are close to the coords_boundary_pbc
             coords_boundary_pbc = coords_boundary.copy()
-            for i, j in [(1, 0), (0, 1), (1, 1), (-1, 0), (0, -1), (-1, -1), (1, -1), (-1, 1)]:
+            for i, j in [
+                (1, 0),
+                (0, 1),
+                (1, 1),
+                (-1, 0),
+                (0, -1),
+                (-1, -1),
+                (1, -1),
+                (-1, 1),
+            ]:
                 coords_boundary_shifted = coords_boundary + np.array(
                     [i * self.nx, j * self.ny]
                 )
@@ -771,25 +798,29 @@ class ImageFitting:
         mse = ops.sqrt(ops.mean(ops.square(diff)))
         l1 = ops.mean(ops.abs(diff))
         return mse + l1
-    
-    def loss(self, image, prediction):
+
+    def loss(self, y_true, y_pred):
         """
         Compute the loss value between the image and the prediction.
 
         Parameters:
         -----------
-        image : np.ndarray
-            The original image tensor.
-        prediction : np.ndarray
-            The predicted image tensor.
+        y_true : np.ndarray
+            The original image tensor (ground truth).
+        y_pred : np.ndarray
+            The predicted image tensor (model output).
 
         Returns:
         --------
         float
             The computed loss value.
         """
-        diff = image - prediction
-        diff = ops.multiply(diff, self.window)
+        diff = y_true - y_pred
+        if keras.backend.backend() == "torch":
+            window = keras.ops.convert_to_tensor(self.window, dtype="float32")
+        else:
+            window = self.window
+        diff = ops.multiply(diff, window)
         mse = ops.sqrt(ops.mean(ops.square(diff)))
         l1 = ops.mean(ops.abs(diff))
         return mse + l1
@@ -799,7 +830,7 @@ class ImageFitting:
         prediction = self.predict(params)
         diff = self.image_tensor - prediction
         return diff
-    
+
     # fitting
     def linear_estimator(self, params: dict = None, non_negative=False):
         if params is None:
@@ -811,7 +842,7 @@ class ImageFitting:
         pos_y = params["pos_y"]
         width = params["width"]
         height = params["height"]
-        ratio = params.get('ratio',None)
+        ratio = params.get("ratio", None)
         if self.same_width:
             width = width[self.atom_types]
             if ratio is not None:
@@ -821,19 +852,20 @@ class ImageFitting:
         #         "The height has negative values, the linear estimator is not valid, I will make it to zero but be careful with the results."
         #     )
         #     height[height < 0] = 0
-    
 
         # Vectorized implementation using keras.ops
         window_size = ops.cast(ops.max(width) * 5, dtype="int32")
-        x = ops.arange(-window_size, window_size + 1, 1, dtype='float32')
-        y = ops.arange(-window_size, window_size + 1, 1, dtype='float32')
+        x = ops.arange(-window_size, window_size + 1, 1, dtype="float32")
+        y = ops.arange(-window_size, window_size + 1, 1, dtype="float32")
         local_x, local_y = ops.meshgrid(x, y, indexing="xy")
 
         input_params = (ops.mod(pos_x, 1), ops.mod(pos_y, 1), height, width)
         if ratio is not None:
             input_params += (ratio,)
 
-        peak_local = self.model.model_fn(local_x[..., None], local_y[..., None], *input_params)
+        peak_local = self.model.model_fn(
+            local_x[..., None], local_y[..., None], *input_params
+        )
 
         pos_x_int = ops.floor(pos_x)
         pos_y_int = ops.floor(pos_y)
@@ -841,7 +873,12 @@ class ImageFitting:
         global_x = ops.expand_dims(local_x, -1) + pos_x_int
         global_y = ops.expand_dims(local_y, -1) + pos_y_int
 
-        mask = (global_x >= 0) & (global_x < self.nx) & (global_y >= 0) & (global_y < self.ny)
+        mask = (
+            (global_x >= 0)
+            & (global_x < self.nx)
+            & (global_y >= 0)
+            & (global_y < self.ny)
+        )
 
         # Get the indices of valid elements where the mask is True.
         valid_indices = ops.where(mask)
@@ -851,7 +888,11 @@ class ImageFitting:
         shape = ops.shape(peak_local)
         # ops.where returns a tuple of index tensors, one for each dimension.
         # We access them with tuple indexing, not array slicing.
-        flat_indices = valid_indices[0] * (shape[1] * shape[2]) + valid_indices[1] * shape[2] + valid_indices[2]
+        flat_indices = (
+            valid_indices[0] * (shape[1] * shape[2])
+            + valid_indices[1] * shape[2]
+            + valid_indices[2]
+        )
 
         # Gather the valid data from the flattened tensors using the 1D indices.
         data_tensor = ops.take(ops.reshape(peak_local, (-1,)), flat_indices)
@@ -861,25 +902,41 @@ class ImageFitting:
         # The column indices correspond to the third dimension of the original tensors.
         cols_tensor = valid_indices[2]
 
-        rows_tensor = ops.cast(global_y_valid, 'int32') * self.nx + ops.cast(global_x_valid, 'int32')
+        rows_tensor = ops.cast(global_y_valid, "int32") * self.nx + ops.cast(
+            global_x_valid, "int32"
+        )
         if self.fit_background:
-            background_rows = ops.reshape(self.y_grid, (-1,)) * self.nx + ops.reshape(self.x_grid, (-1,))
-            rows_tensor = ops.concatenate([rows_tensor, ops.cast(background_rows, 'int32')])
-            cols_tensor = ops.concatenate([cols_tensor, ops.full((self.nx * self.ny,), self.num_coordinates, dtype='int32')])
-            data_tensor = ops.concatenate([data_tensor, ops.ones((self.nx * self.ny,), dtype='float32')])
+            background_rows = ops.reshape(self.y_grid, (-1,)) * self.nx + ops.reshape(
+                self.x_grid, (-1,)
+            )
+            rows_tensor = ops.concatenate(
+                [rows_tensor, ops.cast(background_rows, "int32")]
+            )
+            cols_tensor = ops.concatenate(
+                [
+                    cols_tensor,
+                    ops.full((self.nx * self.ny,), self.num_coordinates, dtype="int32"),
+                ]
+            )
+            data_tensor = ops.concatenate(
+                [data_tensor, ops.ones((self.nx * self.ny,), dtype="float32")]
+            )
             shape = (self.nx * self.ny, self.num_coordinates + 1)
         else:
             shape = (self.nx * self.ny, self.num_coordinates)
 
         design_matrix = coo_matrix(
-            (ops.convert_to_numpy(data_tensor), (ops.convert_to_numpy(rows_tensor), ops.convert_to_numpy(cols_tensor))),
+            (
+                safe_convert_to_numpy(data_tensor),
+                (safe_convert_to_numpy(rows_tensor), safe_convert_to_numpy(cols_tensor)),
+            ),
             shape=shape,
         )
 
         # create the target as the image
-        b = ops.convert_to_numpy(self.image_tensor).ravel()
+        b = safe_convert_to_numpy(self.image_tensor).ravel()
         if not self.fit_background:
-            b = b - ops.convert_to_numpy(self.init_background)
+            b = b - safe_convert_to_numpy(self.init_background)
         # solve the linear equation
         try:
             # Attempt to solve the linear system
@@ -911,9 +968,7 @@ class ImageFitting:
         # update the background and height
 
         if self.fit_background:
-            background = (
-                solution[-1] if solution[-1] > 0 else self.init_background
-            )
+            background = solution[-1] if solution[-1] > 0 else self.init_background
             params["background"] = ops.convert_to_tensor(background)
             height_scale = solution[:-1]
         else:
@@ -933,7 +988,9 @@ class ImageFitting:
                 "The height_scale has values smaller than 0.1, the linear estimator is probably not accurate. I will limit it to 0.1 but be careful with the results."
             )
             height_scale[height_scale < 0.1] = 0.1
-        params["height"] = ops.convert_to_tensor(height_scale) * ops.convert_to_tensor(params["height"])
+        params["height"] = ops.convert_to_tensor(height_scale) * ops.convert_to_tensor(
+            params["height"]
+        )
         self.params = params
         return params
 
@@ -951,16 +1008,29 @@ class ImageFitting:
             image_tensor = self.image_tensor
         self.model.set_params(params)
         self.model.build(self.num_coordinates)
-        self.model.compile(optimizer=keras.optimizers.Adam(learning_rate=step_size),
-            loss=self.loss)
-        early_stopping = keras.callbacks.EarlyStopping(
-            monitor='loss',
-            min_delta=tol,
-            patience=100, 
-            verbose=verbose,
-            restore_best_weights=True
+        self.model.compile(
+            optimizer=keras.optimizers.Adam(learning_rate=step_size), loss=self.loss
         )
-        self.model.fit([self.x_grid, self.y_grid], image_tensor, epochs=maxiter, verbose=verbose, callbacks=[early_stopping], batch_size=batch_size)
+        early_stopping = keras.callbacks.EarlyStopping(
+            monitor="loss",
+            min_delta=tol,
+            patience=100,
+            verbose=verbose,
+            restore_best_weights=True,
+        )
+        # Add batch dimension to inputs and target
+        x_grid_batch = ops.expand_dims(self.x_grid, 0)  # Add batch dimension
+        y_grid_batch = ops.expand_dims(self.y_grid, 0)  # Add batch dimension
+        image_tensor_batch = ops.expand_dims(image_tensor, 0)  # Add batch dimension
+        
+        self.model.fit(
+            x=[x_grid_batch, y_grid_batch],
+            y=image_tensor_batch,
+            epochs=maxiter,
+            verbose=verbose,
+            callbacks=[early_stopping],
+            batch_size=1,  # Set to 1 since we have only one sample (the full image)
+        )
         optimized_params = self.model.get_params()
         return optimized_params
 
@@ -975,13 +1045,18 @@ class ImageFitting:
         if params is None:
             params = self.params if self.params is not None else self.init_params()
         params = self.optimize(
-            image_tensor=self.image_tensor, params=params, maxiter=maxiter, tol=tol, step_size=step_size, verbose=verbose
+            image_tensor=self.image_tensor,
+            params=params,
+            maxiter=maxiter,
+            tol=tol,
+            step_size=step_size,
+            verbose=verbose,
         )
         self.params = params
-        self.prediction = self.predict(params)
+        self.prediction = self.predict(local=True)
         # move prediction to cpu
         if keras.backend.backend() == "torch":
-            self.prediction = self.prediction.cpu().numpy()
+            self.prediction = self.prediction.detach().cpu().numpy()
 
         return params
 
@@ -1009,7 +1084,6 @@ class ImageFitting:
             )
             image = self.image_tensor
 
-
             for index in tqdm(random_batches, desc="Fitting random batch"):
                 current_params = copy.deepcopy(params)
                 atoms_selected = np.zeros(self.num_coordinates, dtype=bool)
@@ -1023,10 +1097,19 @@ class ImageFitting:
                 local_residual = global_prediction - local_prediction
                 local_target = ops.stop_gradient(image - local_residual)
                 optimized_select_params = self.optimize(
-                    local_target, select_params, maxiter=maxiter, tol=tol, step_size=step_size, verbose=verbose
+                    local_target,
+                    select_params,
+                    maxiter=maxiter,
+                    tol=tol,
+                    step_size=step_size,
+                    verbose=verbose,
                 )
-                clipped_optimized_select_params = self.clip_params(optimized_select_params)                
-                params = self.update_from_local_params(current_params, clipped_optimized_select_params, atoms_selected)
+                clipped_optimized_select_params = self.clip_params(
+                    optimized_select_params
+                )
+                params = self.update_from_local_params(
+                    current_params, clipped_optimized_select_params, atoms_selected
+                )
                 if plot:
                     plt.subplots(1, 3, figsize=(15, 5))
                     plt.subplot(1, 3, 1)
@@ -1059,12 +1142,12 @@ class ImageFitting:
         return params
 
     def fit_voronoi(
-            self,
-            params: dict = None,  # initial params, optional
-            max_radius: int = None,  # optional, for Voronoi cell size
-            tol: float = 1e-3,
-            border: int = 0,  # optional, exclude border pixels
-            ):
+        self,
+        params: dict = None,  # initial params, optional
+        max_radius: int = None,  # optional, for Voronoi cell size
+        tol: float = 1e-3,
+        border: int = 0,  # optional, exclude border pixels
+    ):
         """
         Fit a Gaussian model to each Voronoi cell defined by the current coordinates.
         Each cell is fit independently and in parallel.
@@ -1072,7 +1155,7 @@ class ImageFitting:
         """
         if params is None:
             if self.params is not None:
-                if 'pos_x' in self.params and 'pos_y' in self.params:
+                if "pos_x" in self.params and "pos_y" in self.params:
                     params = self.params
                 else:
                     params = self.init_params()
@@ -1087,12 +1170,12 @@ class ImageFitting:
         # Generate Voronoi cell map
         if max_radius is None:
             max_radius = params["width"].max() * 3
-            
-        image = ops.convert_to_numpy(self.image)
-        max_radius = ops.convert_to_numpy(max_radius)
-        coords = ops.convert_to_numpy(coords)
 
-        point_record = voronoi_point_record(image,coords, max_radius)
+        image = safe_convert_to_numpy(self.image)
+        max_radius = safe_convert_to_numpy(max_radius)
+        coords = safe_convert_to_numpy(coords)
+
+        point_record = voronoi_point_record(image, coords, max_radius)
 
         # Prepare per-cell fitting function
         def fit_cell(index, params):
@@ -1114,30 +1197,39 @@ class ImageFitting:
             cropped_img[~cropped_mask] = 0
 
             # Prepare grid for fitting
-            x_c, y_c = ops.meshgrid(ops.arange(x0, x1), ops.arange(y0, y1), indexing="xy")
-            x_c = ops.convert_to_numpy(x_c)
-            y_c = ops.convert_to_numpy(y_c)
+            x_c, y_c = ops.meshgrid(
+                ops.arange(x0, x1), ops.arange(y0, y1), indexing="xy"
+            )
+            x_c = safe_convert_to_numpy(x_c)
+            y_c = safe_convert_to_numpy(y_c)
 
             # Prepare initial params for this cell
             local_param = {}
-            local_param['pos_x'] = [params['pos_x'][index]]
-            local_param['pos_y'] = [params['pos_y'][index]]
-            local_param['height'] = params['height'][index] + params['background'] - local_min
-            local_param['width'] = params['width']
-            local_param['background'] = [0.0]
+            local_param["pos_x"] = [params["pos_x"][index]]
+            local_param["pos_y"] = [params["pos_y"][index]]
+            local_param["height"] = (
+                params["height"][index] + params["background"] - local_min
+            )
+            local_param["width"] = params["width"]
+            local_param["background"] = [0.0]
             self.fit_background = False
 
             atoms_selected = np.zeros(self.num_coordinates, dtype=bool)
             atoms_selected[index] = True
 
             p0 = [
-                local_param['pos_x'][0],
-                local_param['pos_y'][0],
-                local_param['height'],
-                local_param['width'][self.atom_types[index]],
-                local_param['background'][0],
+                local_param["pos_x"][0],
+                local_param["pos_y"][0],
+                local_param["height"],
+                local_param["width"][self.atom_types[index]],
+                local_param["background"][0],
             ]
-            if border > 0 and (pos_x.min() < border or pos_x.max() > self.nx - border or pos_y.min() < border or pos_y.max() > self.ny - border):
+            if border > 0 and (
+                pos_x.min() < border
+                or pos_x.max() > self.nx - border
+                or pos_y.min() < border
+                or pos_y.max() > self.ny - border
+            ):
                 popt = p0
             else:
                 try:
@@ -1146,7 +1238,7 @@ class ImageFitting:
                         (x_c, y_c),
                         cropped_img.ravel(),
                         p0=p0,
-                        maxfev=2000
+                        maxfev=2000,
                     )
                 except Exception as _:
                     popt = p0  # fallback if fit fails
@@ -1157,11 +1249,11 @@ class ImageFitting:
             #     popt = p0
 
             optimized_param = {
-                'pos_x': popt[0],
-                'pos_y': popt[1],
-                'height': popt[2],
-                'width': popt[3],
-                'background': popt[4]
+                "pos_x": popt[0],
+                "pos_y": popt[1],
+                "height": popt[2],
+                "width": popt[3],
+                "background": popt[4],
             }
             return optimized_param, index
 
@@ -1171,20 +1263,47 @@ class ImageFitting:
         current_params = copy.deepcopy(self.params)
         if keras.backend.backend() == "jax":
             # conver the params to numpy array
-            current_params = {key: ops.convert_to_numpy(value) for key, value in current_params.items()}
-            pre_params = {key: ops.convert_to_numpy(value) for key, value in pre_params.items()}
+            current_params = {
+                key: safe_convert_to_numpy(value)
+                for key, value in current_params.items()
+            }
+            pre_params = {
+                key: safe_convert_to_numpy(value) for key, value in pre_params.items()
+            }
         while not converged:
             with ThreadPoolExecutor() as executor:
-                futures = [executor.submit(fit_cell, i, current_params) for i in range(num_coordinates)]
-                for future in tqdm(as_completed(futures), total=num_coordinates, desc="Fitting cells"):
+                futures = [
+                    executor.submit(fit_cell, i, current_params)
+                    for i in range(num_coordinates)
+                ]
+                # Collect all updates first
+                pos_x_updates = {}
+                pos_y_updates = {}
+                
+                for future in tqdm(
+                    as_completed(futures), total=num_coordinates, desc="Fitting cells"
+                ):
                     result = future.result()
                     if result is None:
                         continue
                     optimized_param, index = result
-                    current_params['pos_x'][index] = optimized_param['pos_x']
-                    current_params['pos_y'][index] = optimized_param['pos_y']
+                    pos_x_updates[index] = optimized_param["pos_x"]
+                    pos_y_updates[index] = optimized_param["pos_y"]
+                
+                # Apply updates by creating new tensors (avoid in-place operations)
+                if pos_x_updates:
+                    pos_x_array = safe_convert_to_numpy(current_params["pos_x"]).copy()
+                    pos_y_array = safe_convert_to_numpy(current_params["pos_y"]).copy()
+                    
+                    for index, value in pos_x_updates.items():
+                        pos_x_array[index] = value
+                    for index, value in pos_y_updates.items():
+                        pos_y_array[index] = value
+                    
+                    current_params["pos_x"] = safe_convert_to_tensor(pos_x_array, dtype="float32")
+                    current_params["pos_y"] = safe_convert_to_tensor(pos_y_array, dtype="float32")
             converged = self.convergence(current_params, pre_params, tol)
-            pre_params = copy.deepcopy(current_params) 
+            pre_params = copy.deepcopy(current_params)
         self.params = current_params
         # self.model = self.predict(self.params, self.x_grid, self.y_grid)
         return self.params
@@ -1296,7 +1415,9 @@ class ImageFitting:
 
     def update_coordinates(self):
         # check the refined coorinates is different from the current coordinates
-        refined_coordinates = np.stack([self.params["pos_x"], self.params["pos_y"]], axis=1)
+        refined_coordinates = np.stack(
+            [self.params["pos_x"], self.params["pos_y"]], axis=1
+        )
         if np.allclose(refined_coordinates, self.coordinates):
             logging.info("The coordinates have converged.")
             return self.coordinates
@@ -1304,19 +1425,34 @@ class ImageFitting:
             # create & save the initial coordinates
             self.coordinates_history[self.coordinates_state] = self.coordinates.copy()
             # update the coordinates from the params refinement
-            self.coordinates = np.stack([self.params["pos_x"], self.params["pos_y"]], axis=1)
+            self.coordinates = np.stack(
+                [self.params["pos_x"], self.params["pos_y"]], axis=1
+            )
             self.coordinates_state += 1
-            logging.info(f"The coordinates have been updated. Current state: {self.coordinates_state}")
+            logging.info(
+                f"The coordinates have been updated. Current state: {self.coordinates_state}"
+            )
         return self.coordinates
 
     def update_region_analyzers(self):
         for index, region in self.regions.items:
-            region.analyzer.peak_positions = self.coordinates[self.region_column_labels == index]
-            region.analyzer.atom_types = self.atom_types[self.region_column_labels == index]
+            region.analyzer.peak_positions = self.coordinates[
+                self.region_column_labels == index
+            ]
+            region.analyzer.atom_types = self.atom_types[
+                self.region_column_labels == index
+            ]
             logging.info(f"Updated region {index} coordinates for crystal analyzer.")
 
     # plot functions
-    def calibrate(self, cif_file: str = None, a: float = None, b: float = None, region_index: int = 0, unit_cell: list = None):
+    def calibrate(
+        self,
+        cif_file: str = None,
+        a: float = None,
+        b: float = None,
+        region_index: int = 0,
+        unit_cell: list = None,
+    ):
         """
         Calibrate the pixel size based on the FFT of the lattice.
         """
@@ -1341,7 +1477,9 @@ class ImageFitting:
 
         a = a if a is not None else np.linalg.norm(crystal_analyzer.unit_cell.cell[0])
         b = b if b is not None else np.linalg.norm(crystal_analyzer.unit_cell.cell[1])
-        _, vec_a_pixel, vec_b_pixel = crystal_analyzer.select_lattice_vectors(reciprocal=True)
+        _, vec_a_pixel, vec_b_pixel = crystal_analyzer.select_lattice_vectors(
+            reciprocal=True
+        )
         dx_a = a / np.linalg.norm(vec_a_pixel)
         dx_b = b / np.linalg.norm(vec_b_pixel)
         self.dx = (dx_a + dx_b) / 2
@@ -1415,7 +1553,16 @@ class ImageFitting:
         plt.title("Residual")
         plt.tight_layout()
 
-    def plot_scs(self, layout="horizontal", per_element=False, s=1, save=False, has_units=True, half: str = None, figsize=(10, 5)):
+    def plot_scs(
+        self,
+        layout="horizontal",
+        per_element=False,
+        s=1,
+        save=False,
+        has_units=True,
+        half: str = None,
+        figsize=(10, 5),
+    ):
         assert layout in {
             "horizontal",
             "vertical",
@@ -1460,6 +1607,8 @@ class ImageFitting:
         # plot the scs
         pos_x = self.params["pos_x"] * self.dx
         pos_y = self.params["pos_y"] * self.dx
+        pos_x = safe_convert_to_numpy(pos_x)
+        pos_y = safe_convert_to_numpy(pos_y) 
         if per_element:
             plt_idx = 1
             col = len(np.unique(self.atom_types)) + 1
@@ -1510,7 +1659,16 @@ class ImageFitting:
             plt.savefig("scs.svg")
             plt.savefig("scs.png", dpi=300)
 
-    def plot_scs_voronoi(self, layout="horizontal", s=1, per_element=False, save=False, has_units=True, half: str = None, figsize=(10, 5)):
+    def plot_scs_voronoi(
+        self,
+        layout="horizontal",
+        s=1,
+        per_element=False,
+        save=False,
+        has_units=True,
+        half: str = None,
+        figsize=(10, 5),
+    ):
         assert self.voronoi_volume is not None, "Please run the voronoi analysis first"
         if per_element:
             row, col = 1, 2
@@ -1654,12 +1812,13 @@ class ImageFitting:
     @property
     def num_atom_types(self):
         return len(np.unique(self._atom_types)) if len(self._atom_types) > 0 else 0
-    
+
     @property
     def region_column_labels(self):
         return self.regions.region_map[
             self.coordinates[:, 1].astype(int), self.coordinates[:, 0].astype(int)
         ]
+
     @property
     def voronoi_volume(self):
         return self._voronoi_volume
