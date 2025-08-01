@@ -1,9 +1,11 @@
 import numba as nb
 import numpy as np
-from hyperspy.signals import BaseSignal, Signal2D
 from skimage.segmentation import watershed
 from tqdm import tqdm as progressbar
 from scipy.spatial import cKDTree
+
+from concurrent.futures import ThreadPoolExecutor,as_completed
+from tqdm import tqdm
 
 
 def voronoi_integrate(
@@ -104,7 +106,7 @@ def voronoi_integrate(
             max_radius = max(image.shape[-2:])
         elif max_radius <= 0:
             raise ValueError("max_radius must be higher than 0.")
-        point_record = calculate_point_record(image, points, max_radius, pbc=pbc)
+        point_record = voronoi_point_record(image, points, max_radius, pbc=pbc)
 
     elif method == "Watershed":
         if len(image.shape) > 2:
@@ -117,12 +119,23 @@ def voronoi_integrate(
     else:
         raise NotImplementedError("Oops! You have asked for an unimplemented method.")
     point_record -= 1
-    for point_index in progressbar(
-        range(points.shape[1]), desc="Integrating", disable=not show_progressbar
-    ):
-        integrated_intensity[point_index] = get_integrated_intensity(
-            point_record, image, point_index
-        )
+
+    def process_point(point_index):
+        return point_index, get_integrated_intensity(point_record, image, point_index)
+
+    with ThreadPoolExecutor() as executor:
+        futures = [
+            executor.submit(process_point, point_index)
+            for point_index in range(points.shape[1])
+        ]
+        for future in tqdm(
+            as_completed(futures),
+            total=points.shape[1],
+            desc="Integrating",
+            disable=not show_progressbar,
+        ):
+            point_index, intensity = future.result()
+            integrated_intensity[point_index] = intensity
 
     for i, j in progressbar(
         np.ndindex(image.shape[-2:]),
@@ -138,17 +151,6 @@ def voronoi_integrate(
             summed = integrated_intensity[point_index]
             intensity_record[..., i, j] = summed
 
-    if isinstance(s, BaseSignal):
-        intensity_record = s._deepcopy_with_new_data(
-            intensity_record, copy_variance=True
-        )
-    else:
-        intensity_record = Signal2D(intensity_record)
-
-    point_record = Signal2D(point_record)
-    point_record.metadata.Signal.quantity = "Column Index"
-    intensity_record.metadata.Signal.quantity = "Integrated Intensity"
-
     if remove_edge_cells:
         remove_integrated_edge_cells(
             integrated_intensity,
@@ -160,7 +162,7 @@ def voronoi_integrate(
         )
     return integrated_intensity, intensity_record, point_record
 
-def fast_voronoi_point_record(image, points, max_radius, pbc=False, box=None):
+def voronoi_point_record(image, points, max_radius, pbc=False, box=None):
     """
     Fast Voronoi cell assignment using cKDTree.
 
@@ -209,6 +211,8 @@ def calculate_point_record(image, points, max_radius, pbc=False):
     """
     Creates a Voronoi array where equal values belong to
     the same Voronoi cell
+    
+    This is slow version from atomap
 
     Parameters
     ----------
@@ -236,7 +240,6 @@ def calculate_point_record(image, points, max_radius, pbc=False):
         else:
             point_record[i][j] = min_index + 1
     return point_record
-
 
 def get_integrated_intensity(point_record, image, point_index, include_edge_cells=True):
     """

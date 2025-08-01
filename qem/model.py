@@ -1,345 +1,322 @@
-import jax
-import jax.numpy as jnp
-import numpy as np
-from jax import jit
-from jax.scipy.signal import convolve2d
-from numba import jit as njit
+import os
+from abc import ABC, abstractmethod
 from functools import partial
 
+import numpy as np
+from dotenv import load_dotenv
+from numba import jit as njit
 
-@njit(nopython=True)
-def gaussian_2d_numba(X, Y, pos_x, pos_y, height, width):
-    # Unpack the parameters
-    gauss = height * np.exp(
-        -(
-            (X[:, :, None] - pos_x[None, None, :]) ** 2
-            + (Y[:, :, None] - pos_y[None, None, :]) ** 2
-        )
-        / (2 * width**2)
-    )
-    return gauss
+load_dotenv()
+import keras
+from keras import ops
+class ImageModel(keras.Model):
+    """Base class for all image models."""
 
-
-def gaussian_2d_single(XY, pos_x, pos_y, height, width, background):
-    X, Y = XY
-    return (height * np.exp(
-        -((X - pos_x) ** 2 + (Y - pos_y) ** 2) / (2 * width ** 2)
-    ) + background).ravel()
-
-@njit(nopython=True)
-def lorentzian_2d_numba(X, Y, pos_x, pos_y, height, gamma):
-    # Unpack the parameters
-    lorentz = height * gamma**2 / (
-        (X[:, :, None] - pos_x[None, None, :]) ** 2
-        + (Y[:, :, None] - pos_y[None, None, :]) ** 2
-        + gamma**2
-    )
-    return lorentz
-
-
-@njit(nopython=True)
-def voigt_2d_numba(X, Y, pos_x, pos_y, height, sigma, gamma, ratio):
-    # Unpack the parameters
-    R2 = (X[:, :, None] - pos_x[None, None, :]) ** 2 + (
-        Y[:, :, None] - pos_y[None, None, :]
-    ) ** 2
-
-    voigt = height * (
-        ratio * np.exp(-(R2) / (2 * sigma**2))
-        + (1 - ratio) * gamma**3 / (R2 + gamma**2) ** (3 / 2)
-    )
-    return voigt
-
-
-@jax.jit
-def gaussian_2d_jax(X, Y, pos_x, pos_y, height, width):
-    # Unpack the parameters
-    gauss = height * jnp.exp(
-        -(
-            (X[:, :, None] - pos_x[None, None, :]) ** 2
-            + (Y[:, :, None] - pos_y[None, None, :]) ** 2
-        )
-        / (2 * width**2)
-    )
-    return gauss
-
-
-@njit(nopython=True, parallel=True)
-def add_peak_at_positions(total_sum, pos_x, pos_y, gaussian_local, windows_size):
-    pos_x = pos_x.astype(np.int32)
-    pos_y = pos_y.astype(np.int32)
-    for i in range(len(pos_x)):
-        left = max(pos_x[i] - windows_size, 0)
-        right = min(pos_x[i] + windows_size + 1, total_sum.shape[1])
-        top = max(pos_y[i] - windows_size, 0)
-        bottom = min(pos_y[i] + windows_size + 1, total_sum.shape[0])
-        local_left = left - pos_x[i] + windows_size
-        local_right = right - pos_x[i] + windows_size
-        local_top = top - pos_y[i] + windows_size
-        local_bottom = bottom - pos_y[i] + windows_size
-        total_sum[top:bottom, left:right] += gaussian_local[
-            local_top:local_bottom, local_left:local_right, i
-        ]
-    return total_sum
-
-
-@jax.jit
-def gaussian_sum_parallel(X, Y, pos_x, pos_y, height, width, background):
-    # Unpack the parameters
-    total = (
-        jnp.sum(
-            height
-            * jnp.exp(
-                -(
-                    (X[:, :, None] - pos_x[None, None, :]) ** 2
-                    + (Y[:, :, None] - pos_y[None, None, :]) ** 2
-                )
-                / (2 * width**2)
-            ),
-            axis=2,
-        )
-        + background
-    )
-    return total
-
-
-@jax.jit
-def gaussian_sum_batched(X, Y, pos_x, pos_y, height, width, background):
-    """
-    Computes the sum of Gaussian functions on a grid in batches to save memory.
-    Each batch processes up to 100 peaks at a time.
-
-    Parameters:
-    - X, Y: Meshgrids of x and y coordinates.
-    - pos_x, pos_y: Arrays containing the x and y positions of the Gaussian peaks.
-    - height: Heights of the Gaussian peaks.
-    - width: Width (standard deviation) of the Gaussian peaks, assumed constant for all peaks for simplicity.
-    - background: Background intensity level.
-
-    Returns:
-    - A 2D array of the summed intensity values with background added.
-    """
-    # Initialize the sum with the background level
-    gaussian_sum = jnp.zeros(X.shape) + background
-
-    # Number of peaks
-    num_peaks = len(pos_x)
-
-    # Process in batches of 100
-    for i in range(0, num_peaks, 100):
-        # Indices for the current batch
-        end_idx = i + 100
-
-        # Select the batch of parameters
-        batch_pos_x = pos_x[i:end_idx]
-        batch_pos_y = pos_y[i:end_idx]
-        batch_height = height[i:end_idx]
-
-        # Assuming width is a scalar or has the same value for each peak for simplicity
-        # If width varies per peak, it should be indexed similar to pos_x, pos_y, and height
-
-        # Calculate the Gaussian contributions for the current batch
-        batch_contributions = jnp.sum(
-            batch_height[:, None, None]
-            * jnp.exp(
-                -(
-                    (X[None, :, :] - batch_pos_x[:, None, None]) ** 2
-                    + (Y[None, :, :] - batch_pos_y[:, None, None]) ** 2
-                )
-                / (2 * width**2)
-            ),
-            axis=0,
-        )
-
-        # Update the total sum with contributions from this batch
-        gaussian_sum += batch_contributions
-
-    return gaussian_sum
-
-
-@jax.jit
-def voigt_sum_parallel(X, Y, pos_x, pos_y, height, sigma, gamma, ratio, background):
-    R2 = (X[:, :, None] - pos_x[None, None, :]) ** 2 + (
-        Y[:, :, None] - pos_y[None, None, :]
-    ) ** 2
-
-    total = (
-        jnp.sum(
-            height
-            * (
-                ratio * jnp.exp(-(R2) / (2 * sigma**2))
-                + (1 - ratio) * gamma**3 / (R2 + gamma**2) ** (3 / 2)
-            ),
-            axis=2,
-        )
-        + background
-    )
-    return total
-
-
-@jax.jit
-def lorentzian_sum_parallel(X, Y, pos_x, pos_y, height, gamma, background):
-    R2 = (X[:, :, None] - pos_x[None, None, :]) ** 2 + (
-        Y[:, :, None] - pos_y[None, None, :]
-    ) ** 2
-
-    total = (
-        jnp.sum(
-            height * gamma**4 / (R2 + gamma**2) ** (2),
-            axis=2,
-        )
-        + background
-    )
-    return total
-
-
-def butterworth_window(shape, cutoff_radius_ftr, order):
-    """
-    Generate a 2D Butterworth window.
-
-    Parameters:
-    - shape: tuple of ints, the shape of the window (height, width).
-    - cutoff_radius_ftr: float, the cutoff frequency as a fraction of the radius (0, 0.5].
-    - order: int, the order of the Butterworth filter.
-
-    Returns:
-    - window: 2D numpy array, the Butterworth window.
-    """
-    assert len(shape) == 2, "Shape must be a tuple of length 2 (height, width)"
-    assert (
-        0 < cutoff_radius_ftr <= 0.5
-    ), "Cutoff frequency must be in the range (0, 0.5]"
-
-    def butterworth_1d(length, cutoff_radius_ftr, order):
-        n = np.arange(-np.floor(length / 2), length - np.floor(length / 2))
-        return 1 / (1 + (n / (cutoff_radius_ftr * length)) ** (2 * order))
-
-    window_y = butterworth_1d(shape[0], cutoff_radius_ftr, order)
-    window_x = butterworth_1d(shape[1], cutoff_radius_ftr, order)
-
-    window = np.outer(window_y, window_x)
-
-    return window
-
-
-@jax.jit
-def gaussian_kernel(sigma: float) -> jnp.ndarray:
-    """
-    Creates a 2D Gaussian kernel with the given size and sigma.
-    """
-    x = jnp.arange(-20 // 2, 20 // 2 + 1.0)
-    y = jnp.arange(-20 // 2, 20 // 2 + 1.0)
-    xx, yy = jnp.meshgrid(x, y)
-    kernel = jnp.exp(-(xx**2 + yy**2) / (2 * sigma**2))
-    kernel = kernel / jnp.sum(kernel)
-    return kernel
-
-
-@jax.jit
-def gaussian_filter_jax(image: jnp.ndarray, sigma: float) -> jnp.ndarray:
-    """
-    Applies Gaussian filter to a 2D image.
-    """
-    # x = jnp.linspace(-2, 2, 10)
-    # window = jax.scipy.stats.norm.pdf(x) * jax.scipy.stats.norm.pdf(x[:, None])
-    # diff = jax.scipy.signal.convolve2d(diff, window, mode="same")
-    kernel = gaussian_kernel(sigma)
-    # Convolve the image with the Gaussian kernel
-    filtered_image = convolve2d(image, kernel, mode="same")
-    return filtered_image
-
-
-def mask_grads(grads, keys_to_mask):
-    """A pre-update function that masks out gradients for specified keys."""
-    # Extract gradients from the optimizer state
-    # Zero out gradients for the keys to mask
-    masked_grads = {
-        k: np.zeros_like(grads[k]) if k in keys_to_mask else grads[k] for k in grads
-    }
-
-    # Update the state with masked gradients
-
-    return masked_grads
-
-
-@jax.jit
-def get_window_size(width, threshold=1e-6):
-    """
-    Calculate the window size needed to capture most of the Gaussian's intensity.
-    
-    Args:
-        width (float): Width (sigma) of the Gaussian
-        threshold (float): Minimum relative intensity to consider (e.g., 1e-6 means 0.0001% of peak height)
-    
-    Returns:
-        int: Window size that captures the Gaussian intensity above the threshold
-    """
-    return jnp.ceil(width * jnp.sqrt(-2 * jnp.log(threshold))).astype(jnp.int32)
-
-
-@jax.jit
-def gaussian_2d_window(x, y, pos_x, pos_y, height, width):
-    """
-    Compute a single Gaussian contribution in a window.
-    """
-    return height * jnp.exp(-((x - pos_x) ** 2 + (y - pos_y) ** 2) / (2 * width ** 2))
-
-
-def get_static_window_size(width_max, threshold=1e-6):
-    """
-    Calculate a static window size that will work for all Gaussians.
-    
-    Args:
-        width_max: Maximum width (sigma) of all Gaussians
-        threshold: Minimum relative intensity to consider
-    """
-    return int(np.ceil(width_max * 5))  # 5 sigma covers >99.99% of the Gaussian
-
-
-@jax.jit
-def get_window_indices(pos_x, pos_y, window_size, ny, nx):
-    """
-    Calculate window indices for a Gaussian peak using static window size.
-    """
-    x_start = jnp.maximum(0, jnp.floor(pos_x - window_size)).astype(jnp.int32)
-    x_end = jnp.minimum(nx, jnp.ceil(pos_x + window_size + 1)).astype(jnp.int32)
-    y_start = jnp.maximum(0, jnp.floor(pos_y - window_size)).astype(jnp.int32)
-    y_end = jnp.minimum(ny, jnp.ceil(pos_y + window_size + 1)).astype(jnp.int32)
-    return x_start, x_end, y_start, y_end
-
-
-@jax.jit
-def add_gaussian_to_window(result, x_start, x_end, y_start, y_end, pos_x, pos_y, height, width):
-    """
-    Add a Gaussian contribution to a specific window in the result array.
-    """
-    y_coords = jnp.arange(y_start, y_end)[:, jnp.newaxis]
-    x_coords = jnp.arange(x_start, x_end)[jnp.newaxis, :]
-    window = gaussian_2d_window(x_coords, y_coords, pos_x, pos_y, height, width)
-    return result.at[y_start:y_end, x_start:x_end].add(window)
-
-
-def create_gaussian_sum_local(ny: int, nx: int):
-    """
-    Create a JIT-compiled function for specific image dimensions.
-    
-    Args:
-        ny, nx: Static image dimensions
-    Returns:
-        JIT-compiled function that takes (pos_x, pos_y, height, width, background, window_size)
-    """
-    @jax.jit
-    def gaussian_sum_local(pos_x, pos_y, height, width, background, window_size):
-        result = jnp.full((ny, nx), background)
+    def __init__(self, dx: float=1.0):
+        """Initialize the model.
         
-        def scan_body(carry, x):
-            result, i = carry
-            p_x, p_y, h, w = pos_x[i], pos_y[i], height[i], width[i]
-            x_start, x_end, y_start, y_end = get_window_indices(p_x, p_y, window_size, ny, nx)
-            result = add_gaussian_to_window(result, x_start, x_end, y_start, y_end, p_x, p_y, h, w)
-            return (result, i + 1), None
+        Args:
+            dx (float, optional): Pixel size. Defaults to 1.0.
+        """
+        super().__init__()
+        self.dx = dx
+        self.input_params = None
+            
+    def set_params(self, params):
+        # Set params as tensors, but do not build variables yet
+        self.input_params = {k: keras.ops.convert_to_tensor(v) for k, v in params.items()}
+        # If already built and shapes match, update values
+        if self.built:
+            self.update_params(self.input_params)
+
+    def update_params(self, params):
+        """Update the model parameters (values only, not shapes)."""
+        for key, value in params.items():
+            if hasattr(self, key):
+                current_value = getattr(self, key)
+                if isinstance(current_value, keras.Variable):
+                    current_value.assign(value)
+                else:
+                    setattr(self, key, value)
+            else:
+                raise ValueError(f"Parameter {key} does not exist in the model.")
+
+    def build(self, input_shape):
+        if self.input_params is None:
+            raise ValueError("initial_params must be set before building the model.")
+        # If already built and shapes match, do nothing
+        if self.built:
+            return
+        # Otherwise, create new variables
+        self.pos_x = self.add_weight(shape=(self.input_params['pos_x'].shape[0],), initializer=keras.initializers.Constant(self.input_params['pos_x']), name="pos_x")
+        self.pos_y = self.add_weight(shape=(self.input_params['pos_y'].shape[0],), initializer=keras.initializers.Constant(self.input_params['pos_y']), name="pos_y")
+        self.height = self.add_weight(shape=(self.input_params['height'].shape[0],), initializer=keras.initializers.Constant(self.input_params['height']), name="height")
+        self.width = self.add_weight(shape=(self.input_params['width'].shape[0],), initializer=keras.initializers.Constant(self.input_params['width']), name="width")
+        self.background = self.add_weight(shape=(), initializer=keras.initializers.Constant(self.input_params['background']), name="background")
+        super().build(input_shape)
         
-        (result, _), _ = jax.lax.scan(scan_body, (result, 0), None, length=len(pos_x))
-        return result
-    
-    return gaussian_sum_local
+    def get_params(self):
+        return {
+            "pos_x": keras.ops.convert_to_tensor(self.pos_x),
+            "pos_y": keras.ops.convert_to_tensor(self.pos_y),
+            "height": keras.ops.convert_to_tensor(self.height),
+            "width": keras.ops.convert_to_tensor(self.width),
+            "background": keras.ops.convert_to_tensor(self.background),
+        }
+
+    def call(self, inputs):
+        """Forward pass of the model."""
+        x_grid, y_grid = inputs
+        return self.sum(x_grid, y_grid)
+
+    @abstractmethod
+    def model_fn(self, x, y, pos_x, pos_y, height, width, *args):
+        """Core model function that defines the peak shape."""
+        pass
+
+
+    @abstractmethod
+    def volume(self, params: dict) -> np.ndarray:
+        """Calculate the volume of each peak."""
+        pass
+
+    def _sum(self, x_grid, y_grid, local=True):
+        """Calculate all peaks either globally or locally.
+        
+        Args:
+            x_grid (array): x_grid coordinates mesh
+            y_grid (array): y_grid coordinates mesh
+            local (bool, optional): If True, calculate peaks locally within a fixed window. Defaults to False.
+            
+        Returns:
+            array: Sum of all peaks plus background
+        """
+        kargs = []
+        if hasattr(self, 'ratio'):
+            kargs.append(self.ratio)
+
+        if not local:
+            # Calculate all peaks at once and sum them
+            peaks = self.model_fn(
+                x_grid[:, :, None], y_grid[:, :, None],
+                self.pos_x[None, None, :], self.pos_y[None, None, :],
+                self.height, self.width, *kargs
+            )
+            return keras.ops.sum(peaks, axis=-1) + self.background
+        else:
+            # Local calculation with parallel processing
+            width_max = keras.ops.max(self.width) 
+            window_size = keras.ops.cast(keras.ops.ceil(width_max * 4), dtype="int32")
+
+            # Create a local coordinate grid for the window
+            window_x = keras.ops.arange(-window_size, window_size + 1, dtype=x_grid.dtype)
+            window_y = keras.ops.arange(-window_size, window_size + 1, dtype=y_grid.dtype)
+            local_x_grid, local_y_grid = keras.ops.meshgrid(window_x, window_y)
+
+            # Calculate local peaks relative to their centers (0,0)
+            # The positions are implicitly handled by where we add the peaks back.
+            input_params = (keras.ops.mod(self.pos_x, 1), keras.ops.mod(self.pos_y, 1), self.height, self.width)
+            if hasattr(self, 'ratio'):
+                input_params += (self.ratio,)
+            
+            peak_local = self.model_fn(local_x_grid[..., None], local_y_grid[..., None], *input_params)
+
+            # Calculate integer base coordinates for each peak
+            pos_x_int = keras.ops.floor(self.pos_x)
+            pos_y_int = keras.ops.floor(self.pos_y)
+
+            # Calculate the global coordinates for each point in each local peak window
+            global_x = keras.ops.expand_dims(local_x_grid, -1) + pos_x_int
+            global_y = keras.ops.expand_dims(local_y_grid, -1) + pos_y_int
+
+            # Create a mask for coordinates that are within the image boundaries
+            mask = (global_x >= 0) & (global_x < x_grid.shape[1]) & (global_y >= 0) & (global_y < y_grid.shape[0])
+
+            # Get the indices of valid elements where the mask is True.
+            valid_indices = keras.ops.where(mask)
+            
+            # Flatten the mask to get 1D indices of valid elements.
+            flat_indices = keras.ops.where(keras.ops.reshape(mask, (-1,)))[0]
+
+            # Gather the valid data from the flattened tensors using the 1D indices.
+            valid_values = keras.ops.take(keras.ops.reshape(peak_local, (-1,)), flat_indices)
+            global_x_valid = keras.ops.take(keras.ops.reshape(global_x, (-1,)), flat_indices)
+            global_y_valid = keras.ops.take(keras.ops.reshape(global_y, (-1,)), flat_indices)
+
+            # The column indices correspond to the third dimension of the original tensors.
+            cols_tensor = valid_indices[2]
+
+            # Create the final image tensor
+            total = keras.ops.zeros_like(x_grid, dtype=x_grid.dtype)
+            
+            # Use the backend to scatter the local peaks onto the global image
+            backend = keras.backend.backend()
+            if backend == 'torch':
+                import torch
+                # Calculate flat indices for scatter_add
+                indices = (keras.ops.cast(global_y_valid, dtype='int64') * total.shape[1] + keras.ops.cast(global_x_valid, dtype='int64'))
+                
+                total_flat = total.flatten()
+                # Use a non-in-place operation to help PyTorch's autograd manage memory
+                total_flat = total_flat.scatter_add(0, indices, valid_values)
+                total = total_flat.reshape(total.shape)
+            elif backend == 'jax':
+                import jax.numpy as jnp
+                # JAX uses a different approach for indexed updates
+                indices = (keras.ops.cast(global_y_valid, 'int32'), keras.ops.cast(global_x_valid, 'int32'))
+                total = total.at[indices].add(valid_values)
+            else: # tensorflow
+                import tensorflow as tf
+                # TensorFlow uses tensor_scatter_nd_add
+                indices = keras.ops.stack([keras.ops.cast(global_y_valid, dtype='int32'), keras.ops.cast(global_x_valid, dtype='int32')], axis=-1)
+                total = tf.tensor_scatter_nd_add(total, indices, valid_values)
+
+            return total + self.background
+
+    def sum(self, x_grid, y_grid, local=False):
+        """Calculate sum of peaks using Keras.
+        
+        Args:
+            x_grid (array): x_grid coordinates mesh
+            y_grid (array): y_grid coordinates mesh
+            local (bool, optional): If True, calculate peaks locally within a fixed window. Defaults to False.
+            
+        Returns:
+            array: Sum of all peaks plus background
+        """
+        return self._sum(x_grid, y_grid, local=local)
+
+class GaussianModel(ImageModel):
+    """Gaussian peak model."""
+
+    def volume(self, params: dict) -> np.ndarray:
+        """Calculate the volume of each Gaussian peak.
+        
+        For a 2D Gaussian, the volume is: height * 2π * width²
+        """
+        height = params["height"]
+        width = params["width"]
+        return height * 2 * np.pi * width**2 * self.dx**2
+
+    def model_fn(self, x, y, pos_x, pos_y, height, width, *args):
+        """Core computation for Gaussian model using Keras."""
+        return height * keras.ops.exp(
+            -(keras.ops.square(x - pos_x) + keras.ops.square(y - pos_y)) / (2 * keras.ops.square(width))
+        )
+
+class LorentzianModel(ImageModel):
+    """Lorentzian peak model."""
+
+    def volume(self, params: dict) -> np.ndarray:
+        """Calculate the volume of each Lorentzian peak.
+        
+        For a 2D Lorentzian, the volume is: height * π * width²
+        """
+        height = params["height"]
+        width = params["width"]
+        return height * np.pi * width**2 * self.dx**2
+
+    def model_fn(self, x, y, pos_x, pos_y, height, width, *args):
+        """Core computation for Lorentzian model using Keras."""
+        return height / (
+            1 + (keras.ops.square(x - pos_x) + keras.ops.square(y - pos_y)) / keras.ops.square(width)
+        )
+
+
+class VoigtModel(ImageModel):
+    """Voigt peak model."""
+
+    def __init__(self, dx: float=1.0, background: float=0.0):
+        """Initialize the model.
+        
+        Args:
+            dx (float, optional): Pixel size. Defaults to 1.0.
+            background (float, optional): Background level. Defaults to 0.0.
+        """
+        super().__init__(dx, background)
+        # self.model_type = "voigt"
+
+    def set_params(self, params):
+        super().set_params(params)
+        self.ratio = self.input_params['ratio']
+
+    def build(self, input_shape):
+        super().build(input_shape)
+        self.ratio = self.add_weight(shape=(), initializer=keras.initializers.Constant(self.input_params['ratio']), name="ratio")
+
+    def get_params(self):
+        params = super().get_params()
+        params['ratio'] = keras.ops.convert_to_tensor(self.ratio)
+        return params
+
+    def volume(self, params: dict) -> np.ndarray:
+        """Calculate the volume of each Voigt peak.
+        
+        For a 2D Voigt profile, the volume is a weighted sum of Gaussian and Lorentzian volumes:
+        V = ratio * (height * 2π * width²) + (1-ratio) * (height * π * width²)
+        """
+        height = params["height"]
+        width = params["width"]
+        ratio = params["ratio"]
+        
+        gaussian_vol = height * 2 * np.pi * width**2 * self.dx**2
+        lorentzian_vol = height * np.pi * width**2 * self.dx**2
+        
+        return ratio * gaussian_vol + (1 - ratio) * lorentzian_vol
+
+    def model_fn(self, x, y, pos_x, pos_y, height, width, ratio):
+        """Core computation for Voigt model using Keras."""
+        # Convert width to sigma and gamma
+        sigma = width
+        gamma = width / keras.ops.sqrt(2 * keras.ops.log(2.0))
+        
+        # Calculate squared distance
+        r2 = keras.ops.square(x - pos_x) + keras.ops.square(y - pos_y)
+        
+        # Compute Gaussian and Lorentzian parts
+        gaussian_part = keras.ops.exp(-r2 / (2 * sigma**2))
+        lorentzian_part = gamma**3 / keras.ops.power(r2 + gamma**2, 3/2)
+        
+        # Return weighted sum
+        return height * (ratio * gaussian_part + (1 - ratio) * lorentzian_part)
+
+
+class GaussianKernel:
+    """Gaussian kernel implementation."""
+
+    def __init__(self):
+        """Initialize the kernel.
+        
+        Args:
+            backend (str, optional): Backend to use ('tensorflow', 'pytorch', or 'jax'). Defaults to 'jax'.
+        """
+
+    def gaussian_kernel(self, sigma):
+        """Creates a 2D Gaussian kernel with the given sigma."""
+        size = int(4 * sigma + 0.5) * 2 + 1  # Odd size
+        x = keras.ops.arange(-(size // 2), (size // 2) + 1, dtype='float32')
+        x_grid, y_grid = keras.ops.meshgrid(x, x)
+        kernel = keras.ops.exp(-(x_grid**2 + y_grid**2) / (2 * sigma**2))
+        return kernel / keras.ops.sum(kernel)
+
+    def gaussian_filter(self, image, sigma):
+        """Applies Gaussian filter to a 2D image."""
+        # Ensure both image and kernel are float32
+        image = keras.ops.cast(image, 'float32')
+        kernel = self.gaussian_kernel(sigma)
+        # Add channel dimensions for input and kernel
+        image = keras.ops.expand_dims(keras.ops.expand_dims(image, 0), -1)  # [1, H, W, 1]
+        kernel = keras.ops.expand_dims(keras.ops.expand_dims(kernel, -1), -1)  # [H, W, 1, 1]
+        filtered = keras.ops.conv(image, kernel, padding='same')
+        return keras.ops.squeeze(filtered)  # Remove extra dimensions
+
+@njit
+def gaussian_2d_single(xy, pos_x, pos_y, height, width, background):
+    """2D Gaussian function for single atom."""
+    x_grid, y_grid = xy
+    return (
+        height
+        * np.exp(
+            -((x_grid[:,:,None] - pos_x) ** 2 + (y_grid[:,:,None] - pos_y) ** 2) / (2 * width**2)
+        ) + background
+    ).ravel()

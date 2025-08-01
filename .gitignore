@@ -1,7 +1,27 @@
-qem/archive/
+# python files
 qem/__pycache__/
 tests/__pycache__/
+QEM.egg-info/
+
+# environment
+.env
 .vscode/
+.coverage
+
+# data directories
+data_local/
+data/2016-05_efficientFitProgram/
+data/SRO-CTO/
+data/ETO_KTO/
+data/STO/
+data/SRO-CTO/
+data/
+
+# archives
+archive/
+qem/archive/
+
+# examples
 examples/ABO3.lammps
 examples/adf_aligned.hspy
 examples/SrTiO3_mp-5229_conventional_standard.cif
@@ -13,25 +33,17 @@ examples/runs/
 examples/yolov8n.pt
 examples/yolo/dataset/
 examples/high_entropy_adf.hspy
-QEM.egg-info/
 examples/yolo/
 examples/__pycache__/
 examples/others/
-archieve/
-data_local/
-
 examples/fft_utils.py
 examples/Spectral_Unmixing.ipynb
 examples/1859 HAADF 33.7 nm.emd.hspy
 examples/ETO_KTO.ipynb
 examples/ETO_KTO.py
 examples/ETO_KTO/
-.coverage
-data/2016-05_efficientFitProgram/
-flake8_autofix/
 examples/dev.ipynb
-data/SRO-CTO/
 examples/superlattice_adf.h5
 examples/crystal_analyzer.ipynb
 examples/CTO-SRO.ipynb
-.env
+

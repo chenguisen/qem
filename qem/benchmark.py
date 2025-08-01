@@ -6,7 +6,7 @@ import numpy as np
 from sklearn.ensemble import IsolationForest
 
 from qem.io import read_legacyInputStatSTEM
-from qem.image_fitting import ImageModelFitting
+from qem.image_fitting import ImageFitting
 
 
 def time_it(func):
@@ -94,10 +94,10 @@ class Benchmark:
         verbose=False,
         plot=True,
     ) -> None:
-        model = ImageModelFitting(self.image, dx=self.dx)
+        model = ImageFitting(self.image, dx=self.dx)
         model.coordinates = self.input_coordinates / self.dx
         params = model.init_params(atom_size=atom_size, guess_radius=guess_radius)
-        params = model.fit_random_batch(
+        params = model.fit_stochastic(
             params,
             tol=tol,
             maxiter=maxiter,
@@ -127,7 +127,7 @@ class Benchmark:
         plt.gca().invert_yaxis()
         plt.colorbar(im, fraction=0.046, pad=0.04)
         plt.gca().set_aspect("equal", adjustable="box")
-        plt.title("QEM refined scs ($\AA^2$)")
+        plt.title(r"QEM refined scs ($\AA^2$)")
         plt.tight_layout()
         plt.subplot(1, 3, 2)
         im = plt.scatter(
@@ -140,7 +140,7 @@ class Benchmark:
         plt.gca().invert_yaxis()
         plt.gca().set_aspect("equal", adjustable="box")
         plt.colorbar(im, fraction=0.046, pad=0.04)
-        plt.title("Voronoi refined scs ($\AA^2$)")
+        plt.title(r"Voronoi refined scs ($\AA^2$)")
         plt.tight_layout()
         plt.subplot(1, 3, 3)
         im = plt.scatter(
@@ -153,7 +153,7 @@ class Benchmark:
         plt.gca().invert_yaxis()
         plt.gca().set_aspect("equal", adjustable="box")
         plt.colorbar(im, fraction=0.046, pad=0.04)
-        plt.title("difference refined scs ($\AA^2$)")
+        plt.title(r"difference refined scs ($\AA^2$)")
         plt.clim(-self.scs_qem.mean() / 10, self.scs_qem.mean() / 10)
         plt.tight_layout()
         if save:
@@ -328,7 +328,7 @@ class Benchmark:
         plt.figure(figsize=(6, 6))
         plt.hist(volume_qem, bins=100, alpha=0.5, label="QEM", density=True)
         plt.hist(volume_statstem, bins=100, alpha=0.5, label="StatSTEM", density=True)
-        plt.xlabel("scs ($\AA^2$)")
+        plt.xlabel(r"scs ($\AA^2$)")
         plt.ylabel("frequency")
         plt.legend()
         plt.title("Histogram of scs")
