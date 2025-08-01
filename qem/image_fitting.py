@@ -376,6 +376,8 @@ class ImageFitting:
             )
 
         self.params = params
+        self.model.set_params(params)
+        self.model.build(self.num_coordinates)
         return params
 
     # find atomic columns
