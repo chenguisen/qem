@@ -48,7 +48,7 @@ def test_gaussian_model(grid_2d, peak_params):
     model.set_grid(x_grid, y_grid)
     model.set_params(peak_params)
     # Build the model
-    model.build(input_shape=[(50, 50), (50, 50)])
+    model.build()
     
     # Test sum method
     result = model.sum(local=False)
@@ -82,7 +82,7 @@ def test_lorentzian_model(grid_2d, peak_params):
     # Set up the model
     model.set_grid(x_grid, y_grid)
     model.set_params(peak_params)
-    model.build(input_shape=[(50, 50), (50, 50)])
+    model.build()
     
     # Test sum method
     result = model.sum(local=False)
@@ -109,7 +109,7 @@ def test_voigt_model(grid_2d, peak_params):
     # Set up the model
     model.set_grid(x_grid, y_grid)
     model.set_params(peak_params)
-    model.build(input_shape=[(50, 50), (50, 50)])
+    model.build()
     
     # Test sum method
     result = model.sum(local=False)

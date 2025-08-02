@@ -47,7 +47,7 @@ class ImageModel(keras.Model):
             else:
                 raise ValueError(f"Parameter {key} does not exist in the model.")
 
-    def build(self, input_shape=None):
+    def build(self):
         if self.input_params is None:
             raise ValueError("initial_params must be set before building the model.")
         # If already built and shapes match, do nothing
@@ -59,7 +59,7 @@ class ImageModel(keras.Model):
         self.height = self.add_weight(shape=(self.input_params['height'].shape[0],), initializer=keras.initializers.Constant(self.input_params['height']), name="height")
         self.width = self.add_weight(shape=(self.input_params['width'].shape[0],), initializer=keras.initializers.Constant(self.input_params['width']), name="width")
         self.background = self.add_weight(shape=(), initializer=keras.initializers.Constant(self.input_params['background']), name="background")
-        super().build(input_shape)
+        super().build(self.input_params['pos_x'].shape[0])
         
     def get_params(self):
         return {
@@ -70,9 +70,9 @@ class ImageModel(keras.Model):
             "background": keras.ops.convert_to_tensor(self.background),
         }
 
-    def call(self):
+    def call(self, inputs=None):
         """Forward pass of the model."""
-        # The inputs are the coordinate grids, but we use the ones set by set_grid
+        # The inputs parameter is ignored - we use the grids set by set_grid
         # This is because Keras passes batched inputs, but we want to use the original grids
         if self.x_grid is None or self.y_grid is None:
             raise ValueError("Model grids not set. Call set_grid() before using the model.")
@@ -248,7 +248,7 @@ class VoigtModel(ImageModel):
         super().set_params(params)
         # The ratio parameter will be handled by the base class update_params method
 
-    def build(self, input_shape=None):
+    def build(self):
         if self.input_params is None:
             raise ValueError("initial_params must be set before building the model.")
         # If already built and shapes match, do nothing
@@ -270,7 +270,7 @@ class VoigtModel(ImageModel):
             name="ratio"
         )
         # Call parent build method
-        super().build(input_shape)
+        super().build()
 
 
     def get_params(self):

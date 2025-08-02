@@ -29,7 +29,7 @@ try:
     model = GaussianModel(dx=1.0)
     model.set_grid(x_grid, y_grid)
     model.set_params(params)
-    model.build(input_shape=[(10, 10), (10, 10)])
+    model.build()
     
     # Test sum method
     result = model.sum(local=False)

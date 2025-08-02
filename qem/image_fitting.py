@@ -392,8 +392,7 @@ class ImageFitting:
         self.params = params
         self.model.set_params(self.params)
         # Build the model with the correct input shape (grid shapes)
-        input_shape = [(self.ny, self.nx), (self.ny, self.nx)]
-        self.model.build(input_shape)
+        self.model.build()
         return params
 
     # find atomic columns
@@ -1029,8 +1028,7 @@ class ImageFitting:
         self.model.set_params(params)
 
         # Build the model with the correct input shape (grid shapes)
-        input_shape = [(self.ny, self.nx), (self.ny, self.nx)]
-        self.model.build(input_shape)
+        self.model.build()
 
         # Backend-specific input preparation
         image_tensor_batch = ops.expand_dims(
@@ -1043,15 +1041,16 @@ class ImageFitting:
             y_grid_batch = ops.expand_dims(self.y_grid, 0)
             model_inputs = [x_grid_batch, y_grid_batch]
         else:
-            # JAX and TensorFlow can work with the grids directly
-            # The model uses grids set via set_grid(), so we pass dummy inputs
-            model_inputs = [self.x_grid, self.y_grid]
+            # JAX and TensorFlow: create dummy inputs with correct batch size
+            # The model uses grids set via set_grid(), so we just need dummy data with batch dimension
+            dummy_input = ops.zeros((1, 1))  # Minimal dummy input with batch dimension
+            model_inputs = dummy_input
         
         # JAX-specific model building: call the model once to ensure it's built
         if self.backend == "jax":
             try:
-                # Force model building by calling it once with dummy data
-                dummy_output = self.model(model_inputs)
+                # Force model building by calling it without arguments (model uses set_grid)
+                dummy_output = self.model()
                 if verbose:
                     print(
                         f"JAX model built successfully, output shape: {dummy_output.shape}"
@@ -1131,8 +1130,7 @@ class ImageFitting:
         temp_model.set_params(select_params)
 
         # Build with the correct input shape (grid shapes)
-        input_shape = [(self.ny, self.nx), (self.ny, self.nx)]
-        temp_model.build(input_shape)
+        temp_model.build()
 
         # Backend-specific input preparation for local optimization
         local_target_batch = ops.expand_dims(
@@ -1145,14 +1143,16 @@ class ImageFitting:
             y_grid_batch = ops.expand_dims(self.y_grid, 0)
             model_inputs = [x_grid_batch, y_grid_batch]
         else:
-            # JAX and TensorFlow can work with the grids directly
-            model_inputs = [self.x_grid, self.y_grid]
+            # JAX and TensorFlow: create dummy inputs with correct batch size
+            # The model uses grids set via set_grid(), so we just need dummy data with batch dimension
+            dummy_input = ops.zeros((1, 1))  # Minimal dummy input with batch dimension
+            model_inputs = dummy_input
         
         # JAX-specific model building: call the model once to ensure it's built
         if self.backend == "jax":
             try:
-                # Force model building by calling it once with dummy data
-                dummy_output = temp_model(model_inputs)
+                # Force model building by calling it without arguments (model uses set_grid)
+                dummy_output = temp_model()
                 if verbose:
                     print(
                         f"JAX temp model built successfully, output shape: {dummy_output.shape}"
@@ -1234,8 +1234,7 @@ class ImageFitting:
                 temp_model.set_grid(self.x_grid, self.y_grid)
                 temp_model.set_params(select_params)
                 # Build with the correct input shape (grid shapes)
-                input_shape = [(self.ny, self.nx), (self.ny, self.nx)]
-                temp_model.build(input_shape)
+                temp_model.build()
 
                 # Calculate local prediction using the temporary model
                 local_prediction = temp_model.sum(local=local)
