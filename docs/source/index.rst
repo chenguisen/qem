@@ -1,7 +1,7 @@
 QEM - Quantitative Electron Microscopy
 =======================================
 
-.. image:: QEM.png
+.. image:: icon.png
    :alt: QEM Logo
    :align: center
    :width: 200px
