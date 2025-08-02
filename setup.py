@@ -3,7 +3,7 @@ from setuptools import find_packages, setup
 setup(
     name="QEM",
     version="0.0.1",
-    author="EMAT, University of Antwerp",
+    author="Zezhong Zhang",
     author_email="zezhong.zhang@uantwerpen.be",
     description="Package for quantification of STEM data",
     packages=find_packages(exclude=["tests", "tests.*"]),

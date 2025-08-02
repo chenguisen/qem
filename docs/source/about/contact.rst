@@ -7,7 +7,7 @@ Get in Touch
 **Primary Contact:**
 Zezhong Zhang  
 Email: zhangzz@aisi.ac.cn  
-EMAT, University of Antwerp
+AI for Science Institute, Beijing, China
 
 **GitHub Repository:**
 https://github.com/zezhong-zhang/qem

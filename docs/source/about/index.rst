@@ -14,7 +14,7 @@ Project Information
 
 **QEM (Quantitative Electron Microscopy)** is a comprehensive Python package for analyzing atomic-resolution electron microscopy images.
 
-**Institution:** EMAT, University of Antwerp
+**Institution:** AI for Science Institute, Beijing, China
 **License:** GPL v3
 **Repository:** https://github.com/zezhong-zhang/qem
 

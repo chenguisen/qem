@@ -41,7 +41,7 @@ For LaTeX users:
      year = {2024},
      version = {0.1.0},
      url = {https://github.com/zezhong-zhang/qem},
-     institution = {EMAT, University of Antwerp}
+     institution = {AI for Science Institute}
    }
 
 EndNote
@@ -55,8 +55,8 @@ For EndNote users:
    %T QEM - Quantitative Electron Microscopy
    %A Zhang, Zezhong
    %D 2024
-   %C Antwerp, Belgium
-   %I EMAT, University of Antwerp
+   %C Beijing, China
+   %I AI for Science Institute
    %U https://github.com/zezhong-zhang/qem
    %V 0.1.0
 
@@ -98,8 +98,7 @@ Example Acknowledgment
 ----------------------
 
 "The quantitative STEM analysis was performed using QEM (Zhang et al., 2024), 
-a Python package for atomic-resolution electron microscopy analysis developed 
-at EMAT, University of Antwerp."
+a Python package for atomic-resolution electron microscopy analysis."
 
 Questions
 ---------

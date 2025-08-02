@@ -29,8 +29,8 @@ autodoc_mock_imports = [
 # -- Project information -----------------------------------------------------
 
 project = "QEM"
-copyright = f"{datetime.now().year}, EMAT, University of Antwerp"
-author = "EMAT, University of Antwerp"
+copyright = f"{datetime.now().year}, Zezhong Zhang"
+author = "Zezhong Zhang"
 release = "0.1.0"
 version = "0.1.0"
 
@@ -157,7 +157,7 @@ latex_elements = {
 #  author, documentclass [howto, manual, or own class]).
 latex_documents = [
     (master_doc, 'QEM.tex', 'QEM Documentation',
-     'EMAT, University of Antwerp', 'manual'),
+     'Zezhong Zhang', 'manual'),
 ]
 
 # -- Options for manual page output ------------------------------------------
