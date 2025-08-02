@@ -1023,19 +1023,21 @@ class ImageFitting:
         step_size: float = 0.01,
         verbose: bool = False,
         batch_size: int = 1024,
-    ) -> dict[str, NDArray[Any]] | Any:
+    ) -> dict[str, NDArray[Any]]:
         if image_tensor is None:
             image_tensor = self.image_tensor
         self.model.set_params(params)
-        
+
         # Build the model with the correct input shape (grid shapes)
         input_shape = [(self.ny, self.nx), (self.ny, self.nx)]
         self.model.build(input_shape)
-        
+
         # Backend-specific input preparation
-        image_tensor_batch = ops.expand_dims(image_tensor, 0)  # Always need batch dimension for target
-        
-        if self.backend == 'torch':
+        image_tensor_batch = ops.expand_dims(
+            image_tensor, 0
+        )  # Always need batch dimension for target
+
+        if self.backend == "torch":
             # PyTorch needs batch dimensions for inputs
             x_grid_batch = ops.expand_dims(self.x_grid, 0)
             y_grid_batch = ops.expand_dims(self.y_grid, 0)
@@ -1046,21 +1048,23 @@ class ImageFitting:
             model_inputs = [self.x_grid, self.y_grid]
         
         # JAX-specific model building: call the model once to ensure it's built
-        if self.backend == 'jax':
+        if self.backend == "jax":
             try:
                 # Force model building by calling it once with dummy data
                 dummy_output = self.model(model_inputs)
                 if verbose:
-                    print(f"JAX model built successfully, output shape: {dummy_output.shape}")
+                    print(
+                        f"JAX model built successfully, output shape: {dummy_output.shape}"
+                    )
             except Exception as e:
                 if verbose:
                     print(f"JAX model building warning: {e}")
                 # Continue anyway, let fit() handle it
-        
+
         self.model.compile(
             optimizer=keras.optimizers.Adam(learning_rate=step_size), loss=self.loss
         )
-        
+
         early_stopping = keras.callbacks.EarlyStopping(
             monitor="loss",
             min_delta=tol,
@@ -1131,9 +1135,11 @@ class ImageFitting:
         temp_model.build(input_shape)
 
         # Backend-specific input preparation for local optimization
-        local_target_batch = ops.expand_dims(local_target, 0)  # Always need batch dimension for target
-        
-        if self.backend == 'torch':
+        local_target_batch = ops.expand_dims(
+            local_target, 0
+        )  # Always need batch dimension for target
+
+        if self.backend == "torch":
             # PyTorch needs batch dimensions for inputs
             x_grid_batch = ops.expand_dims(self.x_grid, 0)
             y_grid_batch = ops.expand_dims(self.y_grid, 0)
@@ -1143,12 +1149,14 @@ class ImageFitting:
             model_inputs = [self.x_grid, self.y_grid]
         
         # JAX-specific model building: call the model once to ensure it's built
-        if self.backend == 'jax':
+        if self.backend == "jax":
             try:
                 # Force model building by calling it once with dummy data
                 dummy_output = temp_model(model_inputs)
                 if verbose:
-                    print(f"JAX temp model built successfully, output shape: {dummy_output.shape}")
+                    print(
+                        f"JAX temp model built successfully, output shape: {dummy_output.shape}"
+                    )
             except Exception as e:
                 if verbose:
                     print(f"JAX temp model building warning: {e}")
