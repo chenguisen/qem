@@ -37,12 +37,17 @@ from qem.model import (
 from qem.processing import butterworth_window
 from qem.refine import calculate_center_of_mass
 from qem.region import Regions
-from qem.utils import get_random_indices_in_batches, remove_close_coordinates, safe_convert_to_numpy, safe_convert_to_tensor, safe_deepcopy_params
+from qem.utils import (
+    get_random_indices_in_batches,
+    remove_close_coordinates,
+    safe_convert_to_numpy,
+    safe_convert_to_tensor,
+    safe_deepcopy_params,
+)
 from qem.voronoi import voronoi_integrate, voronoi_point_record
 
 
 logging.basicConfig(level=logging.INFO)
-
 
 
 class ImageFitting:
@@ -118,6 +123,9 @@ class ImageFitting:
         self.x_grid = ops.convert_to_tensor(x_grid, dtype="float32")
         self.y_grid = ops.convert_to_tensor(y_grid, dtype="float32")
 
+        # Set the grids on the model
+        self.model.set_grid(self.x_grid, self.y_grid)
+
     def _create_model(self):
         """Create a new model instance based on the model type."""
         if self.model_type == "gaussian":
@@ -139,7 +147,6 @@ class ImageFitting:
         Returns:
             array: Predicted image
         """
-        self.model.set_grid(self.x_grid, self.y_grid)
         prediction = self.model.sum(local=local)
 
         # Handle periodic boundary conditions by rolling the image
@@ -154,8 +161,14 @@ class ImageFitting:
                 (1, -1),
                 (-1, 1),
             ]:
-                self.model.set_grid(self.x_grid + i * self.nx, self.y_grid + j * self.ny) 
+                # Temporarily set shifted grids for periodic boundary conditions
+                original_x_grid, original_y_grid = self.model.x_grid, self.model.y_grid
+                self.model.set_grid(
+                    self.x_grid + i * self.nx, self.y_grid + j * self.ny
+                )
                 prediction += self.model.sum(local=local)
+                # Restore original grids
+                self.model.set_grid(original_x_grid, original_y_grid)
         return prediction
 
     # Properties
@@ -188,7 +201,7 @@ class ImageFitting:
 
         # Create parameters dict for volume calculation
         params = self.params.copy()
-        volume = self.model.volume(params) 
+        volume = self.model.volume(params)
         return safe_convert_to_numpy(volume)
 
     @property
@@ -365,7 +378,7 @@ class ImageFitting:
 
         if isinstance(self.model, VoigtModel):
             if self.same_width:
-                ratio = np.tile(0.9, 1).astype(float)
+                ratio = 0.9  # Scalar for same_width case
             else:
                 ratio = np.tile(0.9, self.num_coordinates).astype(float)
             params["ratio"] = ratio
@@ -378,7 +391,9 @@ class ImageFitting:
 
         self.params = params
         self.model.set_params(self.params)
-        self.model.build(self.num_coordinates)
+        # Build the model with the correct input shape (grid shapes)
+        input_shape = [(self.ny, self.nx), (self.ny, self.nx)]
+        self.model.build(input_shape)
         return params
 
     # find atomic columns
@@ -930,7 +945,10 @@ class ImageFitting:
         design_matrix = coo_matrix(
             (
                 safe_convert_to_numpy(data_tensor),
-                (safe_convert_to_numpy(rows_tensor), safe_convert_to_numpy(cols_tensor)),
+                (
+                    safe_convert_to_numpy(rows_tensor),
+                    safe_convert_to_numpy(cols_tensor),
+                ),
             ),
             shape=shape,
         )
@@ -1009,7 +1027,9 @@ class ImageFitting:
         if image_tensor is None:
             image_tensor = self.image_tensor
         self.model.set_params(params)
-        self.model.build(self.num_coordinates)
+        # Build the model with the correct input shape (grid shapes)
+        input_shape = [(self.ny, self.nx), (self.ny, self.nx)]
+        self.model.build(input_shape)
         self.model.compile(
             optimizer=keras.optimizers.Adam(learning_rate=step_size), loss=self.loss
         )
@@ -1024,7 +1044,7 @@ class ImageFitting:
         x_grid_batch = ops.expand_dims(self.x_grid, 0)  # Add batch dimension
         y_grid_batch = ops.expand_dims(self.y_grid, 0)  # Add batch dimension
         image_tensor_batch = ops.expand_dims(image_tensor, 0)  # Add batch dimension
-        
+
         self.model.fit(
             x=[x_grid_batch, y_grid_batch],
             y=image_tensor_batch,
@@ -1060,10 +1080,12 @@ class ImageFitting:
 
         return params
 
-    def _optimize_local_batch(self, select_params, local_target, maxiter, tol, step_size, verbose=False):
+    def _optimize_local_batch(
+        self, select_params, local_target, maxiter, tol, step_size, verbose=False
+    ):
         """
         Optimize a local batch of parameters using a temporary model.
-        
+
         Args:
             select_params: Dictionary of selected parameters for the batch
             local_target: Target image for the local optimization
@@ -1071,7 +1093,7 @@ class ImageFitting:
             tol: Tolerance for early stopping
             step_size: Learning rate
             verbose: Whether to show verbose output
-            
+
         Returns:
             Dictionary of optimized parameters
         """
@@ -1079,22 +1101,21 @@ class ImageFitting:
         temp_model = self._create_model()
         temp_model.set_grid(self.x_grid, self.y_grid)
         temp_model.set_params(select_params)
-        
-        # Build with the correct subset size
-        subset_size = select_params['pos_x'].shape[0]
-        temp_model.build(subset_size)
-        
+
+        # Build with the correct input shape (grid shapes)
+        input_shape = [(self.ny, self.nx), (self.ny, self.nx)]
+        temp_model.build(input_shape)
+
         # Compile the temporary model
         temp_model.compile(
-            optimizer=keras.optimizers.Adam(learning_rate=step_size), 
-            loss=self.loss
+            optimizer=keras.optimizers.Adam(learning_rate=step_size), loss=self.loss
         )
-        
+
         # Add batch dimensions for local optimization
         x_grid_batch = ops.expand_dims(self.x_grid, 0)
         y_grid_batch = ops.expand_dims(self.y_grid, 0)
         local_target_batch = ops.expand_dims(local_target, 0)
-        
+
         # Set up early stopping
         early_stopping = keras.callbacks.EarlyStopping(
             monitor="loss",
@@ -1103,7 +1124,7 @@ class ImageFitting:
             verbose=verbose,
             restore_best_weights=True,
         )
-        
+
         # Train the temporary model
         temp_model.fit(
             x=[x_grid_batch, y_grid_batch],
@@ -1113,13 +1134,13 @@ class ImageFitting:
             callbacks=[early_stopping],
             batch_size=1,
         )
-        
+
         # Get optimized parameters
         optimized_params = temp_model.get_params()
-        
+
         # Clean up the temporary model
         del temp_model
-        
+
         return optimized_params
 
     def fit_stochastic(
@@ -1131,7 +1152,7 @@ class ImageFitting:
         tol: float = 1e-3,
         step_size: float = 1e-2,
         verbose: bool = False,
-        local:bool = True,
+        local: bool = True,
         plot: bool = False,
     ):
         if params is None:
@@ -1156,21 +1177,23 @@ class ImageFitting:
                 # Calculate global prediction with full parameters
                 self.model.set_params(params)
                 global_prediction = self.predict(local=local)
-                
+
                 # Create a temporary model for local prediction calculation
                 temp_model = self._create_model()
                 temp_model.set_grid(self.x_grid, self.y_grid)
                 temp_model.set_params(select_params)
-                temp_model.build(len(index))
-                
+                # Build with the correct input shape (grid shapes)
+                input_shape = [(self.ny, self.nx), (self.ny, self.nx)]
+                temp_model.build(input_shape)
+
                 # Calculate local prediction using the temporary model
                 local_prediction = temp_model.sum(local=local)
                 local_residual = global_prediction - local_prediction
                 local_target = ops.stop_gradient(image - local_residual)
-                
+
                 # Clean up the temporary model used for prediction
                 del temp_model
-                
+
                 # Optimize the local batch using the dedicated function
                 optimized_select_params = self._optimize_local_batch(
                     select_params, local_target, maxiter, tol, step_size, verbose
@@ -1348,7 +1371,7 @@ class ImageFitting:
                 # Collect all updates first
                 pos_x_updates = {}
                 pos_y_updates = {}
-                
+
                 for future in tqdm(
                     as_completed(futures), total=num_coordinates, desc="Fitting cells"
                 ):
@@ -1358,19 +1381,23 @@ class ImageFitting:
                     optimized_param, index = result
                     pos_x_updates[index] = optimized_param["pos_x"]
                     pos_y_updates[index] = optimized_param["pos_y"]
-                
+
                 # Apply updates by creating new tensors (avoid in-place operations)
                 if pos_x_updates:
                     pos_x_array = safe_convert_to_numpy(current_params["pos_x"]).copy()
                     pos_y_array = safe_convert_to_numpy(current_params["pos_y"]).copy()
-                    
+
                     for index, value in pos_x_updates.items():
                         pos_x_array[index] = value
                     for index, value in pos_y_updates.items():
                         pos_y_array[index] = value
-                    
-                    current_params["pos_x"] = safe_convert_to_tensor(pos_x_array, dtype="float32")
-                    current_params["pos_y"] = safe_convert_to_tensor(pos_y_array, dtype="float32")
+
+                    current_params["pos_x"] = safe_convert_to_tensor(
+                        pos_x_array, dtype="float32"
+                    )
+                    current_params["pos_y"] = safe_convert_to_tensor(
+                        pos_y_array, dtype="float32"
+                    )
             converged = self.convergence(current_params, pre_params, tol)
             pre_params = safe_deepcopy_params(current_params)
         self.params = current_params
@@ -1459,12 +1486,16 @@ class ImageFitting:
                     if mask_local is None:
                         params[key] = ops.scatter_update(params[key], mask, value)
                     else:
-                        params[key] = ops.scatter_update(params[key], mask, value[mask_local])
-                elif keras.backend.backend() == 'torch':
+                        params[key] = ops.scatter_update(
+                            params[key], mask, value[mask_local]
+                        )
+                elif keras.backend.backend() == "torch":
                     if mask_local is None:
                         params[key] = params[key].scatter(0, ops.where(mask)[0], value)
                     else:
-                        params[key] = params[key].scatter(0, ops.where(mask)[0], value[mask_local])
+                        params[key] = params[key].scatter(
+                            0, ops.where(mask)[0], value[mask_local]
+                        )
             else:
                 weight = mask.sum() / self.num_coordinates
                 update = value - params[key]
@@ -1682,7 +1713,7 @@ class ImageFitting:
         pos_x = self.params["pos_x"] * self.dx
         pos_y = self.params["pos_y"] * self.dx
         pos_x = safe_convert_to_numpy(pos_x)
-        pos_y = safe_convert_to_numpy(pos_y) 
+        pos_y = safe_convert_to_numpy(pos_y)
         if per_element:
             plt_idx = 1
             col = len(np.unique(self.atom_types)) + 1

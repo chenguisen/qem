@@ -47,7 +47,7 @@ class ImageModel(keras.Model):
             else:
                 raise ValueError(f"Parameter {key} does not exist in the model.")
 
-    def build(self, input_shape):
+    def build(self, input_shape=None):
         if self.input_params is None:
             raise ValueError("initial_params must be set before building the model.")
         # If already built and shapes match, do nothing
@@ -70,9 +70,13 @@ class ImageModel(keras.Model):
             "background": keras.ops.convert_to_tensor(self.background),
         }
 
-    def call(self, local):
+    def call(self, inputs):
         """Forward pass of the model."""
-        return self.sum(local=local)
+        # The inputs are the coordinate grids, but we use the ones set by set_grid
+        # This is because Keras passes batched inputs, but we want to use the original grids
+        if self.x_grid is None or self.y_grid is None:
+            raise ValueError("Model grids not set. Call set_grid() before using the model.")
+        return self.sum(local=True)
 
     @abstractmethod
     def model_fn(self, x, y, pos_x, pos_y, height, width, *args):
@@ -236,11 +240,32 @@ class VoigtModel(ImageModel):
 
     def set_params(self, params):
         super().set_params(params)
-        self.ratio = self.input_params['ratio']
+        # The ratio parameter will be handled by the base class update_params method
 
-    def build(self, input_shape):
+    def build(self, input_shape=None):
+        if self.input_params is None:
+            raise ValueError("initial_params must be set before building the model.")
+        # If already built and shapes match, do nothing
+        if self.built:
+            return
+            
+        # Handle both scalar and array ratio parameters
+        ratio_param = self.input_params['ratio']
+        if hasattr(ratio_param, 'shape') and len(ratio_param.shape) > 0:
+            # Array case (different ratios for each peak)
+            ratio_shape = (ratio_param.shape[0],)
+        else:
+            # Scalar case (same ratio for all peaks)
+            ratio_shape = ()
+        
+        self.ratio = self.add_weight(
+            shape=ratio_shape, 
+            initializer=keras.initializers.Constant(ratio_param), 
+            name="ratio"
+        )
+        # Call parent build method
         super().build(input_shape)
-        self.ratio = self.add_weight(shape=(), initializer=keras.initializers.Constant(self.input_params['ratio']), name="ratio")
+
 
     def get_params(self):
         params = super().get_params()
