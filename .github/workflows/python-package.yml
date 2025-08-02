@@ -14,20 +14,27 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.10", "3.11"]
-        platform: [cpu]
-        # include:
-        #   - python-version: "3.11"
-        #     platform: gpu
-        #     # Specify the full image path for the GPU container
-        #     container_image: "pytorch/pytorch:2.3.0-cuda12.1-cudnn8-devel" 
+        # Explicitly define configurations to avoid tag format errors
+        include:
+          - python-version: "3.9"
+            platform: "cpu"
+            container_image: "pytorch/pytorch:2.3.0-cpu-py39"
+          - python-version: "3.10"
+            platform: "cpu"
+            container_image: "pytorch/pytorch:2.3.0-cpu-py310"
+          - python-version: "3.11"
+            platform: "cpu"
+            container_image: "pytorch/pytorch:2.3.0-cpu-py311"
+          # - python-version: "3.11"
+          #   platform: "gpu"
+          #   container_image: "pytorch/pytorch:2.3.0-cuda12.1-cudnn8-devel"
 
     runs-on: ubuntu-latest
 
     # Use a container with PyTorch pre-installed
     container:
-      # Dynamically select the container image based on the build matrix
-      image: ${{ matrix.container_image || format('pytorch/pytorch:2.3.0-cpu-py{0}', matrix.python-version) }}
+      # Use the explicitly defined container image from the matrix
+      image: ${{ matrix.container_image }}
     
     steps:
     - uses: actions/checkout@v4
