@@ -1858,6 +1858,8 @@ class ImageFitting:
                 element = self.elements[atom_type]
                 pos_x = self.params["pos_x"][mask] * self.dx
                 pos_y = self.params["pos_y"][mask] * self.dx
+                pos_x = safe_convert_to_numpy(pos_x)
+                pos_y = safe_convert_to_numpy(pos_y) 
                 im = plt.scatter(
                     pos_x, pos_y, c=self.voronoi_volume[mask], s=s, label=element
                 )
