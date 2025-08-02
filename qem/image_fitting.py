@@ -1914,7 +1914,163 @@ class ImageFitting:
             plt.savefig("voronoi_scs.svg")
             plt.savefig("voronoi_scs.png", dpi=300)
 
+    def estimate_atom_counts_with_gmm(
+        self,
+        max_components: int = 5,
+        scoring_method: str = "icl",
+        initialization_method: str = "middle",
+        plot_results: bool = True,
+        per_element: bool = True,
+        save_results: bool = False,
+        interactive_selection: bool = True,
+        use_first_local_minimum: bool = True,
+    ):
+        """Estimate atom counts using Gaussian Mixture Model on cross-section histograms.
+        
+        This method applies GMM to the refined cross-section histogram to statistically
+        determine the number of atoms in each atomic column based on scattering cross-sections.
+        
+        Args:
+            max_components: Maximum number of Gaussian components to test
+            scoring_method: Information criterion for model selection ('icl', 'aic', 'bic')
+            initialization_method: Method for initializing GMM means
+            plot_results: Whether to plot the GMM fitting results
+            per_element: Whether to fit GMM separately for each element type
+            save_results: Whether to save plots and results
+            interactive_selection: Whether to allow interactive component selection
+            use_first_local_minimum: Whether to use first local minimum instead of global
+            
+        Returns:
+            dict: Dictionary containing GMM results and atom count estimates
+        """
+        if not hasattr(self, 'params') or self.params is None:
+            raise ValueError("Please run fitting first to obtain refined cross-sections")
+        
+        from qem.gaussian_mixture_model import GaussianMixtureModel
+        
+        # Get refined cross-sections (volumes)
+        cross_sections = self.volume.reshape(-1, 1)  # Reshape for GMM input
+        
+        gmm_results = {}
+        atom_count_estimates = {}
+        
+        if per_element:
+            # Fit GMM separately for each element type
+            for atom_type in np.unique(self.atom_types):
+                element_name = self.elements[atom_type]
+                mask = self.atom_types == atom_type
+                element_cross_sections = cross_sections[mask]
+                
+                if len(element_cross_sections) < 10:  # Skip if too few data points
+                    logging.warning(f"Skipping GMM for {element_name}: insufficient data points")
+                    continue
+                
+                # Initialize and fit GMM
+                gmm = GaussianMixtureModel(element_cross_sections)
+                gmm.fit_gaussian_mixture_model(
+                    num_components=max_components,
+                    scoring_methods=[scoring_method, "nllh"],
+                    initialization_method=initialization_method,
+                    use_first_local_minimum=use_first_local_minimum,
+                )
+                
+                # Plot results and allow component selection
+                if plot_results:
+                    selected_components = gmm.plot_interactive_gmm_selection(
+                        element_cross_sections, element_name, 
+                        save_results, interactive_selection
+                    )
+                else:
+                    # Use recommendation if no plotting
+                    selected_components = gmm.get_optimal_components("recommendation")
+                
+                # Get component parameters using user-selected components
+                component_idx = selected_components - 1
+                weights = gmm.fit_result.weight[component_idx]
+                means = gmm.fit_result.mean[component_idx]
+                widths = gmm.fit_result.width[component_idx]
+                
+                # Estimate atom counts based on component means
+                # Assume components correspond to different atom counts (1, 2, 3, etc.)
+                sorted_indices = np.argsort(means.flatten())
+                atom_counts = np.arange(1, len(sorted_indices) + 1)
+                
+                # Assign atom counts to each atomic column
+                column_assignments = gmm.fit_result.idxComponentOfScs(component_idx)
+                estimated_counts = atom_counts[sorted_indices][column_assignments]
+                
+                gmm_results[element_name] = {
+                    'gmm_model': gmm,
+                    'selected_components': selected_components,  # Store user selection
+                    'recommended_components': gmm.recommended_components,  # Store recommendation
+                    'weights': weights,
+                    'means': means[sorted_indices],
+                    'widths': widths[sorted_indices],
+                    'scores': gmm.fit_result.score,
+                }
+                
+                atom_count_estimates[element_name] = estimated_counts
+                
+        else:
+            # Fit GMM to all cross-sections together
+            gmm = GaussianMixtureModel(cross_sections)
+            gmm.fit_gaussian_mixture_model(
+                num_components=max_components,
+                scoring_methods=[scoring_method, "nllh"],
+                initialization_method=initialization_method,
+                use_first_local_minimum=use_first_local_minimum,
+            )
+            
+            # Plot results and allow component selection
+            if plot_results:
+                selected_components = gmm.plot_interactive_gmm_selection(
+                    cross_sections, 'all_elements', 
+                    save_results, interactive_selection
+                )
+            else:
+                selected_components = gmm.get_optimal_components("recommendation")
+            
+            component_idx = selected_components - 1
+            
+            weights = gmm.fit_result.weight[component_idx]
+            means = gmm.fit_result.mean[component_idx]
+            widths = gmm.fit_result.width[component_idx]
+            
+            sorted_indices = np.argsort(means.flatten())
+            atom_counts = np.arange(1, len(sorted_indices) + 1)
+            
+            column_assignments = gmm.fit_result.idxComponentOfScs(component_idx)
+            estimated_counts = atom_counts[sorted_indices][column_assignments]
+            
+            gmm_results['all_elements'] = {
+                'gmm_model': gmm,
+                'selected_components': selected_components,  # Store user selection
+                'recommended_components': gmm.recommended_components,  # Store recommendation
+                'weights': weights,
+                'means': means[sorted_indices],
+                'widths': widths[sorted_indices],
+                'scores': gmm.fit_result.score,
+            }
+            
+            atom_count_estimates['all_elements'] = estimated_counts
+        
+        # Store results as instance attributes
+        self.gmm_results = gmm_results
+        self.atom_count_estimates = atom_count_estimates
+        
+        return {
+            'gmm_results': gmm_results,
+            'atom_count_estimates': atom_count_estimates,
+        }
+
+    def _plot_gmm_results(self, cross_sections, gmm_model, element_name, save_results=False):
+        """Legacy method - redirects to GMM module plotting for compatibility."""
+        return gmm_model.plot_interactive_gmm_selection(
+            cross_sections, element_name, save_results, interactive_selection=False
+        )
+
     def plot_scs_histogram(self, save=False, has_units=True):
+        """Plot histogram of refined scattering cross-sections."""
         plt.figure()
         for atom_type in np.unique(self.atom_types):
             mask = self.atom_types == atom_type
@@ -1930,6 +2086,125 @@ class ImageFitting:
         if save:
             plt.savefig("scs_histogram.svg")
             plt.savefig("scs_histogram.png", dpi=300)
+    
+    def plot_atom_count_map(self, element_name=None, save=False, figsize=(12, 8)):
+        """Plot spatial map of estimated atom counts with proper colorbar.
+        
+        Args:
+            element_name: Specific element to plot, or None for all elements
+            save: Whether to save the plot
+            figsize: Figure size tuple
+        """
+        if not hasattr(self, 'atom_count_estimates'):
+            raise ValueError("Please run estimate_atom_counts_with_gmm first")
+        
+        fig, ax = plt.subplots(figsize=figsize)
+        
+        if element_name is None:
+            # Plot all elements with different symbols/colors
+            all_counts = []
+            all_pos_x = []
+            all_pos_y = []
+            
+            for atom_type in np.unique(self.atom_types):
+                element = self.elements[atom_type]
+                if element in self.atom_count_estimates:
+                    mask = self.atom_types == atom_type
+                    counts = self.atom_count_estimates[element]
+                    
+                    pos_x = self.params["pos_x"][mask] * self.dx
+                    pos_y = self.params["pos_y"][mask] * self.dx
+                    
+                    pos_x_np = safe_convert_to_numpy(pos_x)
+                    pos_y_np = safe_convert_to_numpy(pos_y)
+                    
+                    all_counts.extend(counts)
+                    all_pos_x.extend(pos_x_np)
+                    all_pos_y.extend(pos_y_np)
+                    
+                    # Plot each element with different marker
+                    markers = ['o', 's', '^', 'D', 'v', '<', '>', 'p', 'h', 'H']
+                    marker = markers[atom_type % len(markers)]
+                    
+                    scatter = ax.scatter(
+                        pos_x_np, pos_y_np,
+                        c=counts, s=80, alpha=0.8, 
+                        marker=marker, label=f'{element}',
+                        cmap='viridis', vmin=1, vmax=max(all_counts) if all_counts else 5
+                    )
+            
+            # Create colorbar for all elements
+            if all_counts:
+                cbar = plt.colorbar(scatter, ax=ax, shrink=0.8)
+                cbar.set_label('Number of Atoms', fontsize=14, fontweight='bold')
+                # Set integer ticks on colorbar
+                max_count = max(all_counts)
+                cbar.set_ticks(range(1, max_count + 1))
+                
+            ax.legend(loc='upper right', bbox_to_anchor=(1.15, 1))
+            
+        else:
+            # Plot specific element
+            if element_name not in self.atom_count_estimates:
+                raise ValueError(f"No atom count estimates found for {element_name}")
+            
+            atom_type = list(self.elements).index(element_name)
+            mask = self.atom_types == atom_type
+            counts = self.atom_count_estimates[element_name]
+            
+            pos_x = self.params["pos_x"][mask] * self.dx
+            pos_y = self.params["pos_y"][mask] * self.dx
+            
+            pos_x_np = safe_convert_to_numpy(pos_x)
+            pos_y_np = safe_convert_to_numpy(pos_y)
+            
+            scatter = ax.scatter(
+                pos_x_np, pos_y_np,
+                c=counts, s=100, alpha=0.8, cmap='viridis',
+                edgecolors='black', linewidth=0.5
+            )
+            
+            # Create colorbar with proper title
+            cbar = plt.colorbar(scatter, ax=ax, shrink=0.8)
+            cbar.set_label('Number of Atoms', fontsize=14, fontweight='bold')
+            # Set integer ticks on colorbar
+            unique_counts = np.unique(counts)
+            cbar.set_ticks(unique_counts)
+            
+            ax.set_title(f'Atom Count Map - {element_name}', fontsize=16, fontweight='bold')
+        
+        ax.set_xlabel('X (Å)', fontsize=12)
+        ax.set_ylabel('Y (Å)', fontsize=12)
+        if element_name is None:
+            ax.set_title('Spatial Map of Estimated Atom Counts', fontsize=16, fontweight='bold')
+        
+        ax.set_aspect('equal', adjustable='box')
+        ax.invert_yaxis()
+        ax.grid(True, alpha=0.3)
+        
+        # Add summary text
+        if hasattr(self, 'gmm_results'):
+            summary_info = []
+            for elem, results in self.gmm_results.items():
+                if 'selected_components' in results:
+                    selected = results['selected_components']
+                    recommended = results.get('recommended_components', 'N/A')
+                    summary_info.append(f"{elem}: {selected} components (rec: {recommended})")
+            
+            if summary_info:
+                summary_text = "GMM Selection: " + ", ".join(summary_info)
+                ax.text(0.02, 0.02, summary_text, transform=ax.transAxes,
+                       bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8),
+                       fontsize=10, verticalalignment='bottom')
+        
+        plt.tight_layout()
+        
+        if save:
+            filename = f'atom_count_map_{element_name or "all"}.png'
+            plt.savefig(filename, dpi=300, bbox_inches='tight')
+            logging.info(f"Atom count map saved as {filename}")
+        
+        plt.show()
 
     def plot_region(self):
         plt.figure()
