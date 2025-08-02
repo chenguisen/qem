@@ -56,11 +56,7 @@
 <!-- [![Product Name Screen Shot][product-screenshot]](https://github.com/zezhong-zhang/qem) -->
 QEM provides a robust, fast, and user-friendly toolkit for quantitative analysis in advanced microscopy. Its primary goal is to build highly accurate atomic models by refining structural parameters directly from experimental data, effectively linking electron microscopy with computational materials science.
 
-Key Features
-- Atomic Model Refinement: Precisely determine scattering cross-sections, atomic positions, and the number of atoms for each atomic column.
-- High-Performance Computing: Achieves significant speed-ups through GPU acceleration.
-- Flexible Backend: Built on [Keras](https://keras.io/), it supports multiple backends like [JAX](https://docs.jax.dev/en/latest/), [TensorFlow](https://www.tensorflow.org), and [PyTorch](https://pytorch.org/), giving users the freedom to choose their preferred framework.
-- Bridging Fields: Creates a seamless workflow between experimental microscopy and computational materials modeling via [ASE](https://wiki.fysik.dtu.dk/ase/).
+
 
 
 The project is a Python-based evolution of the well-regarded [StatSTEM](https://github.com/quantitativeTEM/StatSTEM). You may also want to check [Atomap](https://atomap.org/) serving similar functions. This repo aims to go beyond state-of-the-art and is currently under heavy development.
@@ -72,10 +68,12 @@ The project is a Python-based evolution of the well-regarded [StatSTEM](https://
 ### Features
 
 QEM currently support the following features
-
-- [x] Global model-based parameter estimation via gradient descent
+- [x] Atomic Model Refinement: Precisely determine scattering cross-sections, atomic positions, and the number of atoms for each atomic column.
+- [x] High-Performance Computing: Achieves significant speed-ups through GPU acceleration, model-based parameter estimation is performed via gradient descent.
 - [x] Flexibility of model choices (Gaussian, Lorentzian, Voigt, ect)
-- [x] Multi-elemental column refinement with different width 
+- [x] Multi-elemental column refinement with same/different width for each element/column 
+- [x] Flexible Backend: Built on [Keras](https://keras.io/), it supports multiple backends like [JAX](https://docs.jax.dev/en/latest/), [TensorFlow](https://www.tensorflow.org), and [PyTorch](https://pytorch.org/), giving users the freedom to choose their preferred framework.
+- [x] Bridging Fields: Creates a seamless workflow between experimental microscopy and computational materials modeling via [ASE](https://wiki.fysik.dtu.dk/ase/).
 - [x] Atomic column assignment with input crystal structure and spatial mask
 - [x] Displacement and strain mapping 
 
@@ -112,7 +110,7 @@ cd examples
 - [ ] Test the code on Windows
 - [ ] Improve Gaussian mixture model and selection rule
 - [ ] Atom counting based on simulated library
-- [ ] Better peak initization
+- [ ] Better peak initialisation 
 - [ ] Perovskite polarisation, oxygen octahedron tilt and distortion
 - [ ] Add documentation
 - [ ] Add tests
