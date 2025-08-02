@@ -225,16 +225,14 @@ class LorentzianModel(ImageModel):
 
 class VoigtModel(ImageModel):
     """Voigt peak model."""
-
-    def __init__(self, dx: float=1.0, background: float=0.0):
+    def __init__(self, dx: float=1.0):
         """Initialize the model.
-        
+
         Args:
             dx (float, optional): Pixel size. Defaults to 1.0.
-            background (float, optional): Background level. Defaults to 0.0.
         """
-        super().__init__(dx, background)
-        # self.model_type = "voigt"
+        super().__init__(dx)
+        self.ratio = None
 
     def set_params(self, params):
         super().set_params(params)
