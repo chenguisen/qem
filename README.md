@@ -21,7 +21,7 @@
   <p align="center">
     Quantitative Electron Microscopy
     <br />
-    <!-- <a href="https://qem.readthedocs.io/en/latest/"><strong>Explore the docs »</strong></a> -->
+    <a href="https://zezhong-zhang.github.io/qem/"><strong>Explore the docs »</strong></a>
     <br />
     <br />
     <a href="https://github.com/zezhong-zhang/qem/tree/master/examples">View Demo</a>
