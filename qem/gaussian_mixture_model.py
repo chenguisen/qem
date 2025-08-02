@@ -887,10 +887,17 @@ class GaussianMixtureModel:
         # Plot mixture
         ax1.plot(x_range, mixture_pdf, 'r-', linewidth=3, label='GMM Fit')
         
+        # Get the handles and labels from the plot
+        handles, labels = ax1.get_legend_handles_labels()
+        items_per_column = 5 # Decide how many items you want per column
+
+        # Calculate the number of columns needed
+        num_columns = np.ceil(len(handles) / items_per_column)
+        
         # Set labels and title
         ax1.set_xlabel('Scattering Cross-Section')
         ax1.set_ylabel('Probability Density')
-        ax1.legend(loc='upper right')
+        ax1.legend(loc='upper right', ncol=num_columns, fontsize='small')
         ax1.grid(True, alpha=0.3)
         
         # Update title to show current selection
@@ -919,12 +926,12 @@ class GaussianMixtureModel:
         
         # Highlight current selection
         current_score = scores['icl'][current_components - 1]
-        ax2.plot(current_components, current_score, 'ro', markersize=15, 
+        ax2.plot(current_components, current_score, 'ro', label='Your Choice',markersize=15, 
                 markerfacecolor='lightgreen', markeredgecolor='darkred', markeredgewidth=3, zorder=10)
         
         # Highlight recommended selection  
         recommended_score = scores['icl'][self.recommended_components - 1]
-        ax2.plot(self.recommended_components, recommended_score, 'go', markersize=12,
+        ax2.plot(self.recommended_components, recommended_score, 'go', label='First Local Minimum', markersize=12,
                 markerfacecolor='red', markeredgecolor='darkgreen', markeredgewidth=2, zorder=9)
         
         # Add vertical line for current selection
