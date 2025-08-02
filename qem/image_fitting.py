@@ -1042,6 +1042,7 @@ class ImageFitting:
         maxiter: int = 1000,
         tol: float = 1e-3,
         step_size: float = 0.01,
+        local: bool = True,
         verbose: bool = False,
     ):
         if params is None:
@@ -1055,7 +1056,7 @@ class ImageFitting:
             verbose=verbose,
         )
         self.params = params
-        self.prediction = safe_convert_to_numpy(self.predict(local=True))
+        self.prediction = safe_convert_to_numpy(self.predict(local=local))
 
         return params
 
@@ -1130,6 +1131,7 @@ class ImageFitting:
         tol: float = 1e-3,
         step_size: float = 1e-2,
         verbose: bool = False,
+        local:bool = True,
         plot: bool = False,
     ):
         if params is None:
@@ -1153,7 +1155,7 @@ class ImageFitting:
 
                 # Calculate global prediction with full parameters
                 self.model.set_params(params)
-                global_prediction = self.predict(local=True)
+                global_prediction = self.predict(local=local)
                 
                 # Create a temporary model for local prediction calculation
                 temp_model = self._create_model()
@@ -1162,7 +1164,7 @@ class ImageFitting:
                 temp_model.build(len(index))
                 
                 # Calculate local prediction using the temporary model
-                local_prediction = temp_model.sum(local=True)
+                local_prediction = temp_model.sum(local=local)
                 local_residual = global_prediction - local_prediction
                 local_target = ops.stop_gradient(image - local_residual)
                 
