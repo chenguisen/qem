@@ -14,52 +14,51 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Explicitly define configurations to avoid tag format errors
-        include:
-          - python-version: "3.9"
-            platform: "cpu"
-            container_image: "pytorch/pytorch:2.3.0-cpu-py39"
-          - python-version: "3.10"
-            platform: "cpu"
-            container_image: "pytorch/pytorch:2.3.0-cpu-py310"
-          - python-version: "3.11"
-            platform: "cpu"
-            container_image: "pytorch/pytorch:2.3.0-cpu-py311"
-          # - python-version: "3.11"
-          #   platform: "gpu"
-          #   container_image: "pytorch/pytorch:2.3.0-cuda12.1-cudnn8-devel"
+        python-version: ["3.9", "3.10", "3.11"]
+        platform: [cpu]
+        # include:
+        #   - python-version: "3.11"
+        #     platform: gpu
 
     runs-on: ubuntu-latest
-
-    # Use a container with PyTorch pre-installed
-    container:
-      # Use the explicitly defined container image from the matrix
-      image: ${{ matrix.container_image }}
     
     steps:
     - uses: actions/checkout@v4
     
-    # The 'Set up Python' step is no longer needed as the container has Python pre-installed.
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v3
+      with:
+        python-version: ${{ matrix.python-version }}
     
-    # The GPU setup steps below are kept in case you enable the GPU matrix.
-    # The container for GPU builds ('devel' tag) includes CUDA and GCC.
     - name: Install GCC 11
       if: matrix.platform == 'gpu'
       run: |
-        apt-get update && apt-get install -y gcc-11 g++-11
-        update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-11 100
-        update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-11 100
+        sudo apt update
+        sudo apt install -y gcc-11 g++-11
+        sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-11 100
+        sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-11 100
         gcc --version
 
+    - name: Setup GPU (if needed)
+      if: matrix.platform == 'gpu'
+      uses: Jimver/cuda-toolkit@v0.2.21
+      with:
+        # Using CUDA 12.1 to match the pre-built PyTorch wheels
+        cuda: '12.1.0' 
+    
     - name: Install dependencies
       run: |
-        # PyTorch is already in the container, so we just install other dependencies.
         python -m pip install --upgrade pip
         python -m pip install flake8 pytest pytest-cov
         # Install git so we can install from git repositories
-        # Use apt-get without sudo inside the container
-        apt-get update && apt-get install -y git
+        sudo apt-get update && sudo apt-get install -y git
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        # Install PyTorch with appropriate backend
+        if [ "${{ matrix.platform }}" = "gpu" ]; then
+          pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+        else
+          pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+        fi
         # Install the package with dev dependencies
         pip install -e ".[dev]"
     
