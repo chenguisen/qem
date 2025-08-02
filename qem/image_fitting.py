@@ -524,8 +524,8 @@ class ImageFitting:
             region_map=self.regions.region_map,
         )
         try:
-            atom_select.poly.verts = self.region_path_dict[region_index].vertices  # type: ignore
-            atom_select.path = self.region_path_dict[region_index]
+            atom_select.poly.verts = self.regions[region_index].path.vertices  # type: ignore
+            atom_select.path = self.regions[region_index].path
         except KeyError:
             pass
         while plt.fignum_exists(atom_select.fig.number):  # type: ignore
@@ -1931,15 +1931,13 @@ class ImageFitting:
 
     def plot_region(self):
         plt.figure()
-        # cmap = color_iter('Set3', self.num_regions)
-        # cmap = plt.get_cmap("tab10", self.num_regions)
         plt.imshow(self.image, cmap="gray")
         plt.imshow(self.regions.region_map, alpha=0.5)
         scalebar = self.scalebar
         plt.gca().add_artist(scalebar)
         plt.axis("off")
         cbar = plt.colorbar()
-        cbar.set_ticks(np.arange(self.num_regions))  # type: ignore
+        cbar.set_ticks(np.arange(self.regions.num_regions))  # type: ignore
         plt.title("Region Map")
 
     @property
