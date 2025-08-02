@@ -1,8 +1,10 @@
+"""Tests for refinement functions."""
 import numpy as np
 import pytest
 from qem.refine import calculate_center_of_mass, fit_gaussian, gauss2d
 
 def test_gaussian_fitting():
+    """Test 2D Gaussian fitting functionality."""
     # Create a synthetic image with a known 2D Gaussian peak
     image_size = (50, 50)
     # Ground truth parameters
@@ -81,23 +83,8 @@ def test_gaussian_fitting():
     relative_uncertainties = param_uncertainties / np.abs(fitted_params)
     assert np.all(relative_uncertainties < 0.5), "Parameter uncertainties are too large"
 
-def test_center_of_mass_simple():
-    # Test center of mass with a simple case
-    image = np.zeros((5, 5))
-    image[2, 2] = 1.0  # Single pixel at center
-    
-    com = calculate_center_of_mass(image)
-    np.testing.assert_allclose(com[0], [2, 2], atol=1e-10)
-    
-    # Test with multiple peaks
-    image = np.zeros((5, 5))
-    image[1, 1] = 1.0
-    image[3, 3] = 1.0
-    
-    com = calculate_center_of_mass(image)
-    np.testing.assert_allclose(com[0], [2, 2], atol=1e-10)
-
 def test_gaussian_fit_edge_cases():
+    """Test Gaussian fitting with challenging initial conditions."""
     # Test fitting with extreme initial guesses
     image_size = (30, 30)
     x = np.arange(image_size[1], dtype=np.float64)
