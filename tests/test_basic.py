@@ -53,7 +53,7 @@ def test_gaussian_model_basic():
     model = GaussianModel(dx=1.0)
     model.set_grid(x_grid, y_grid)
     model.set_params(params)
-    model.build(input_shape=[(size, size), (size, size)])
+    model.build()
     
     # Test sum method
     result = model.sum(local=False)
