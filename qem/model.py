@@ -70,12 +70,18 @@ class ImageModel(keras.Model):
             "background": keras.ops.convert_to_tensor(self.background),
         }
 
-    def call(self, inputs):
+    def call(self):
         """Forward pass of the model."""
         # The inputs are the coordinate grids, but we use the ones set by set_grid
         # This is because Keras passes batched inputs, but we want to use the original grids
         if self.x_grid is None or self.y_grid is None:
             raise ValueError("Model grids not set. Call set_grid() before using the model.")
+        
+        # For JAX backend, ensure the model is properly built
+        if not self.built and hasattr(self, 'input_params') and self.input_params is not None:
+            # Force building if not already built
+            self.build()
+            
         return self.sum(local=True)
 
     @abstractmethod

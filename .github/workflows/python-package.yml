@@ -71,6 +71,9 @@ jobs:
           echo "XLA_PYTHON_CLIENT_MEM_FRACTION=.5" >> $GITHUB_ENV
         else
           echo "JAX_PLATFORMS=cpu" >> $GITHUB_ENV
+          echo "JAX_ENABLE_X64=true" >> $GITHUB_ENV
+          echo "JAX_DISABLE_JIT=true" >> $GITHUB_ENV
+          echo "XLA_PYTHON_CLIENT_PREALLOCATE=false" >> $GITHUB_ENV
         fi
     
     - name: Lint with flake8
@@ -89,6 +92,9 @@ jobs:
           export JAX_PLATFORMS=cuda
         else
           export JAX_PLATFORMS=cpu
+          export JAX_ENABLE_X64=true
+          export JAX_DISABLE_JIT=true
+          export XLA_PYTHON_CLIENT_PREALLOCATE=false
         fi
         python -m pytest tests/ --cov=qem --cov-report=xml -v
     

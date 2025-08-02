@@ -5,10 +5,10 @@ import pytest
 
 # Configure backend automatically
 from qem.backend_utils import setup_test_backend
-
-setup_test_backend()
+backend = setup_test_backend()
 
 from keras import ops
+import keras
 
 from qem.image_fitting import ImageFitting
 from qem.model import GaussianModel, LorentzianModel, VoigtModel

@@ -55,8 +55,8 @@ def get_best_backend():
             "jax, torch, or tensorflow"
         )
     
-    # Preference order: JAX > PyTorch > TensorFlow
-    preference_order = ['jax', 'torch', 'tensorflow']
+    # Preference order: PyTorch > JAX > TensorFlow (PyTorch is more stable for our use case)
+    preference_order = ['torch', 'jax', 'tensorflow']
     
     for backend in preference_order:
         if backend in available:
@@ -112,6 +112,7 @@ def setup_test_backend():
     """
     try:
         backend = configure_backend()
+        backend_specific_config(backend)
         print(f"Using Keras backend: {backend}")
         return backend
     except Exception as e:
@@ -121,6 +122,7 @@ def setup_test_backend():
         if available:
             backend = available[0]
             os.environ["KERAS_BACKEND"] = backend
+            backend_specific_config(backend)
             print(f"Fallback to: {backend}")
             return backend
         return None
@@ -136,10 +138,22 @@ def backend_specific_config(backend_name):
     if backend_name == 'jax':
         try:
             import jax
-            # Force JAX to use CPU if no GPU available
-            jax.config.update('jax_platforms', 'cpu')
-            # Enable 64-bit precision for better numerical accuracy
-            jax.config.update("jax_enable_x64", True)
+            import jax.numpy as jnp
+            
+            # Read environment variables for JAX configuration
+            jax_platforms = os.environ.get('JAX_PLATFORMS', 'cpu')
+            jax_enable_x64 = os.environ.get('JAX_ENABLE_X64', 'true').lower() == 'true'
+            jax_disable_jit = os.environ.get('JAX_DISABLE_JIT', 'true').lower() == 'true'
+            
+            # Apply JAX configurations
+            jax.config.update('jax_platforms', jax_platforms)
+            jax.config.update("jax_enable_x64", jax_enable_x64)
+            jax.config.update('jax_disable_jit', jax_disable_jit)
+            
+            # Set memory preallocation to avoid memory issues
+            if 'XLA_PYTHON_CLIENT_PREALLOCATE' not in os.environ:
+                os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
+                
         except (ImportError, Exception):
             pass
     
