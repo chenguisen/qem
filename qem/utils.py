@@ -476,3 +476,37 @@ def safe_convert_to_tensor(array, dtype="float32"):
     """
     from keras import ops
     return ops.convert_to_tensor(array, dtype=dtype)
+
+def safe_deepcopy_params(params):
+    """
+    Safely deep copy a parameter dictionary containing tensors.
+    
+    Args:
+        params: Dictionary containing tensors and other values
+        
+    Returns:
+        Dictionary with safely copied parameters
+    """
+    import keras
+    from keras import ops
+    import copy
+    
+    backend = keras.backend.backend()
+    copied_params = {}
+    
+    for key, value in params.items():
+        if hasattr(value, 'shape'):  # It's a tensor
+            if backend == "torch":
+                # For PyTorch, detach and clone to create a leaf tensor
+                if hasattr(value, 'detach'):
+                    copied_params[key] = value.detach().clone()
+                else:
+                    copied_params[key] = ops.convert_to_tensor(safe_convert_to_numpy(value))
+            else:
+                # For JAX and TensorFlow, convert to tensor
+                copied_params[key] = ops.convert_to_tensor(safe_convert_to_numpy(value))
+        else:
+            # For non-tensors, use regular deepcopy
+            copied_params[key] = copy.deepcopy(value)
+    
+    return copied_params
