@@ -888,11 +888,16 @@ class GaussianMixtureModel:
         ax1.plot(x_range, mixture_pdf, 'r-', linewidth=3, label='GMM Fit')
         
         # Get the handles and labels from the plot
-        handles, labels = ax1.get_legend_handles_labels()
+        legend_result = ax1.get_legend_handles_labels()
+        if len(legend_result) == 2:
+            handles, labels = legend_result
+        else:
+            handles, labels = [], []
+        
         items_per_column = 5 # Decide how many items you want per column
 
         # Calculate the number of columns needed
-        num_columns = np.ceil(len(handles) / items_per_column)
+        num_columns = np.ceil(len(handles) / items_per_column) if handles else 1
         
         # Set labels and title
         ax1.set_xlabel('Scattering Cross-Section')
