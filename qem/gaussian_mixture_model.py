@@ -789,7 +789,7 @@ class GaussianMixtureModel:
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
         
         # Plot histogram
-        n, bins, patches = ax1.hist(cross_sections.flatten(), bins=50, alpha=0.7, density=True, 
+        n, bins, patches = ax1.hist(cross_sections.flatten(), bins=50, alpha=0.8, density=True, 
                                    color='lightgray', edgecolor='black', label='Data')
         
         # Store plotting state
@@ -882,7 +882,7 @@ class GaussianMixtureModel:
                     label=f'Component {i+1} (N={i+1})')
             
             # Fill area under curve with transparent color
-            ax1.fill_between(x_range, 0, component_pdf, color=color, alpha=0.3)
+            ax1.fill_between(x_range, 0, component_pdf, color=color, alpha=0.8)
         
         # Plot mixture
         ax1.plot(x_range, mixture_pdf, 'r-', linewidth=3, label='GMM Fit')
@@ -903,7 +903,7 @@ class GaussianMixtureModel:
         ax1.set_xlabel('Scattering Cross-Section')
         ax1.set_ylabel('Probability Density')
         ax1.legend(loc='upper right', ncol=num_columns, fontsize='small')
-        ax1.grid(True, alpha=0.3)
+        ax1.grid(True, alpha=0.8)
         
         # Update title to show current selection
         recommended_text = " (Recommended)" if current_components == self.recommended_components else ""
@@ -940,14 +940,14 @@ class GaussianMixtureModel:
                 markerfacecolor='red', markeredgecolor='darkgreen', markeredgewidth=2, zorder=9)
         
         # Add vertical line for current selection
-        ax2.axvline(self.recommended_components, color='red', linestyle='--', alpha=0.7, linewidth=2)
+        ax2.axvline(self.recommended_components, color='red', linestyle='--', alpha=0.8, linewidth=2)
         
         # Set labels and formatting
         ax2.set_xlabel('Number of Components')
         ax2.set_ylabel('Information Criterion')
         ax2.set_title('Model Selection')
         ax2.legend()
-        ax2.grid(True, alpha=0.3)
+        ax2.grid(True, alpha=0.8)
         
         # Don't call draw here - let the main callback handle it
     
