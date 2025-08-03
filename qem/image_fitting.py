@@ -1021,45 +1021,24 @@ class ImageFitting:
         tol: float = 1e-4,
         step_size: float = 0.01,
         verbose: bool = False,
-        batch_size: int = 1024,
+        batch_size: int = 1,
     ) -> dict[str, NDArray[Any]]:
         if image_tensor is None:
             image_tensor = self.image_tensor
         self.model.set_params(params)
 
         # Build the model with the correct input shape (grid shapes)
-        self.model.build()
-
-        # Backend-specific input preparation
-        image_tensor_batch = ops.expand_dims(
-            image_tensor, 0
-        )  # Always need batch dimension for target
+        # self.model.build()
 
         if self.backend == "torch":
             # PyTorch needs batch dimensions for inputs
-            x_grid_batch = ops.expand_dims(self.x_grid, 0)
-            y_grid_batch = ops.expand_dims(self.y_grid, 0)
-            model_inputs = [x_grid_batch, y_grid_batch]
+            image_tensor = ops.expand_dims(image_tensor, 0)  # Always need batch dimension for target
+            x_grid = ops.expand_dims(self.x_grid, 0)
+            y_grid = ops.expand_dims(self.y_grid, 0)
+            model_inputs = [x_grid, y_grid]
         else:
-            # JAX and TensorFlow: create dummy inputs with correct batch size
-            # The model uses grids set via set_grid(), so we just need dummy data with batch dimension
-            dummy_input = ops.zeros((1, 1))  # Minimal dummy input with batch dimension
-            model_inputs = dummy_input
+            model_inputs = [self.x_grid, self.y_grid]
         
-        # JAX-specific model building: call the model once to ensure it's built
-        if self.backend == "jax":
-            try:
-                # Force model building by calling it without arguments (model uses set_grid)
-                dummy_output = self.model()
-                if verbose:
-                    print(
-                        f"JAX model built successfully, output shape: {dummy_output.shape}"
-                    )
-            except Exception as e:
-                if verbose:
-                    print(f"JAX model building warning: {e}")
-                # Continue anyway, let fit() handle it
-
         self.model.compile(
             optimizer=keras.optimizers.Adam(learning_rate=step_size), loss=self.loss
         )
@@ -1074,11 +1053,11 @@ class ImageFitting:
 
         self.model.fit(
             x=model_inputs,
-            y=image_tensor_batch,
+            y=image_tensor,
             epochs=maxiter,
             verbose=verbose,
             callbacks=[early_stopping],
-            batch_size=1,  # Set to 1 since we have only one sample (the full image)
+            batch_size=batch_size,  # Set to 1 since we have only one sample (the full image)
         )
         optimized_params = self.model.get_params()
         return optimized_params
@@ -1108,14 +1087,13 @@ class ImageFitting:
         return params
 
     def _optimize_local_batch(
-        self, select_params, local_target, maxiter, tol, step_size, verbose=False
+        self, global_params, select_params, maxiter, tol, step_size, verbose=False,local: bool = True
     ):
         """
         Optimize a local batch of parameters using a temporary model.
 
         Args:
             select_params: Dictionary of selected parameters for the batch
-            local_target: Target image for the local optimization
             maxiter: Maximum number of iterations
             tol: Tolerance for early stopping
             step_size: Learning rate
@@ -1124,6 +1102,12 @@ class ImageFitting:
         Returns:
             Dictionary of optimized parameters
         """
+        
+        # Calculate global prediction with full parameters
+        global_model = self._create_model()
+        global_model.set_params(global_params)
+        global_prediction = global_model.sum(local=local)
+        
         # Create a temporary model for local optimization
         temp_model = self._create_model()
         temp_model.set_grid(self.x_grid, self.y_grid)
@@ -1131,13 +1115,18 @@ class ImageFitting:
 
         # Build with the correct input shape (grid shapes)
         temp_model.build()
-
+        
+        # Calculate local prediction using the temporary model
+        local_prediction = temp_model.sum(local=local)
+        local_residual = global_prediction - local_prediction
+        local_target = ops.stop_gradient(self.image_tensor - local_residual)
+        
         # Backend-specific input preparation for local optimization
-        local_target_batch = ops.expand_dims(
-            local_target, 0
-        )  # Always need batch dimension for target
 
         if self.backend == "torch":
+            local_target = ops.expand_dims(
+                local_target, 0
+            )  # Always need batch dimension for target
             # PyTorch needs batch dimensions for inputs
             x_grid_batch = ops.expand_dims(self.x_grid, 0)
             y_grid_batch = ops.expand_dims(self.y_grid, 0)
@@ -1145,23 +1134,8 @@ class ImageFitting:
         else:
             # JAX and TensorFlow: create dummy inputs with correct batch size
             # The model uses grids set via set_grid(), so we just need dummy data with batch dimension
-            dummy_input = ops.zeros((1, 1))  # Minimal dummy input with batch dimension
-            model_inputs = dummy_input
-        
-        # JAX-specific model building: call the model once to ensure it's built
-        if self.backend == "jax":
-            try:
-                # Force model building by calling it without arguments (model uses set_grid)
-                dummy_output = temp_model()
-                if verbose:
-                    print(
-                        f"JAX temp model built successfully, output shape: {dummy_output.shape}"
-                    )
-            except Exception as e:
-                if verbose:
-                    print(f"JAX temp model building warning: {e}")
-                # Continue anyway, let fit() handle it
-
+            model_inputs = [self.x_grid, self.y_grid]
+            
         # Compile the temporary model
         temp_model.compile(
             optimizer=keras.optimizers.Adam(learning_rate=step_size), loss=self.loss
@@ -1179,9 +1153,9 @@ class ImageFitting:
         # Train the temporary model
         temp_model.fit(
             x=model_inputs,
-            y=local_target_batch,
+            y=local_target,
             epochs=maxiter,
-            verbose=0 if not verbose else 1,
+            verbose=verbose,
             callbacks=[early_stopping],
             batch_size=1,
         )
@@ -1225,28 +1199,9 @@ class ImageFitting:
                 atoms_selected[index] = True
                 select_params = self.select_params(params, atoms_selected)
 
-                # Calculate global prediction with full parameters
-                self.model.set_params(params)
-                global_prediction = self.predict(local=local)
-
-                # Create a temporary model for local prediction calculation
-                temp_model = self._create_model()
-                temp_model.set_grid(self.x_grid, self.y_grid)
-                temp_model.set_params(select_params)
-                # Build with the correct input shape (grid shapes)
-                temp_model.build()
-
-                # Calculate local prediction using the temporary model
-                local_prediction = temp_model.sum(local=local)
-                local_residual = global_prediction - local_prediction
-                local_target = ops.stop_gradient(image - local_residual)
-
-                # Clean up the temporary model used for prediction
-                del temp_model
-
                 # Optimize the local batch using the dedicated function
                 optimized_select_params = self._optimize_local_batch(
-                    select_params, local_target, maxiter, tol, step_size, verbose
+                    current_params, select_params, maxiter, tol, step_size, verbose
                 )
                 clipped_optimized_select_params = self.clip_params(
                     optimized_select_params

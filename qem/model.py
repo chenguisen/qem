@@ -1,6 +1,4 @@
-import os
-from abc import ABC, abstractmethod
-from functools import partial
+from abc import abstractmethod
 
 import numpy as np
 from dotenv import load_dotenv
@@ -8,7 +6,9 @@ from numba import jit as njit
 
 load_dotenv()
 import keras
-from keras import ops
+
+from qem.utils import safe_convert_to_numpy
+
 class ImageModel(keras.Model):
     """Base class for all image models."""
 
@@ -95,7 +95,7 @@ class ImageModel(keras.Model):
         """Calculate the volume of each peak."""
         pass
 
-    def _sum(self,  local=True):
+    def _sum(self, local=True):
         """Calculate all peaks either globally or locally.
         
         Args:
@@ -118,12 +118,12 @@ class ImageModel(keras.Model):
             return keras.ops.sum(peaks, axis=-1) + self.background
         else:
             # Local calculation with parallel processing
-            width_max = keras.ops.max(self.width) 
-            window_size = keras.ops.cast(keras.ops.ceil(width_max * 4), dtype="int32")
+            # width_max = keras.ops.max(self.input_params['width']) 
+            window_size = int(safe_convert_to_numpy(self.input_params['width'])*4)  # Use max width for the window size
 
             # Create a local coordinate grid for the window
-            window_x = keras.ops.arange(-window_size, window_size + 1, dtype=self.x_grid.dtype)
-            window_y = keras.ops.arange(-window_size, window_size + 1, dtype=self.y_grid.dtype)
+            window_x = keras.ops.arange(-window_size, window_size + 1, dtype='int32')
+            window_y = keras.ops.arange(-window_size, window_size + 1, dtype='int32')
             local_x_grid, local_y_grid = keras.ops.meshgrid(window_x, window_y)
 
             # Calculate local peaks relative to their centers (0,0)
@@ -146,7 +146,7 @@ class ImageModel(keras.Model):
             mask = (global_x >= 0) & (global_x < self.x_grid.shape[1]) & (global_y >= 0) & (global_y < self.y_grid.shape[0])
 
             # Get the indices of valid elements where the mask is True.
-            valid_indices = keras.ops.where(mask)
+            # valid_indices = keras.ops.where(mask)
             
             # Flatten the mask to get 1D indices of valid elements.
             flat_indices = keras.ops.where(keras.ops.reshape(mask, (-1,)))[0]
@@ -157,14 +157,14 @@ class ImageModel(keras.Model):
             global_y_valid = keras.ops.take(keras.ops.reshape(global_y, (-1,)), flat_indices)
 
             # Create the final image tensor
-            total = keras.ops.zeros_like(self.x_grid, dtype=self.x_grid.dtype)
+            total = keras.ops.zeros_like(self.x_grid, dtype='float32')
             
             # Use the backend to scatter the local peaks onto the global image
             backend = keras.backend.backend()
             if backend == 'torch':
                 import torch
                 # Calculate flat indices for scatter_add
-                indices = (keras.ops.cast(global_y_valid, dtype='int64') * total.shape[1] + keras.ops.cast(global_x_valid, dtype='int64'))
+                indices = (keras.ops.cast(global_y_valid, dtype='int32') * total.shape[1] + keras.ops.cast(global_x_valid, dtype='int32'))
                 
                 total_flat = total.flatten()
                 # Use a non-in-place operation to help PyTorch's autograd manage memory
