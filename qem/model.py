@@ -21,12 +21,6 @@ class ImageModel(keras.Model):
         super().__init__()
         self.dx = dx
         self.input_params = None
-        self.x_grid= None
-        self.y_grid = None
-        
-    def set_grid(self, x_grid, y_grid):
-        self.x_grid = x_grid
-        self.y_grid = y_grid
             
     def set_params(self, params):
         # Set params as tensors, but do not build variables yet
@@ -47,7 +41,7 @@ class ImageModel(keras.Model):
             else:
                 raise ValueError(f"Parameter {key} does not exist in the model.")
 
-    def build(self):
+    def build(self,input_shape=None):
         if self.input_params is None:
             raise ValueError("initial_params must be set before building the model.")
         # If already built and shapes match, do nothing
@@ -59,7 +53,7 @@ class ImageModel(keras.Model):
         self.height = self.add_weight(shape=(self.input_params['height'].shape[0],), initializer=keras.initializers.Constant(self.input_params['height']), name="height")
         self.width = self.add_weight(shape=(self.input_params['width'].shape[0],), initializer=keras.initializers.Constant(self.input_params['width']), name="width")
         self.background = self.add_weight(shape=(), initializer=keras.initializers.Constant(self.input_params['background']), name="background")
-        super().build(self.input_params['pos_x'].shape[0])
+        super().build(input_shape)
         
     def get_params(self):
         return {
@@ -70,19 +64,18 @@ class ImageModel(keras.Model):
             "background": keras.ops.convert_to_tensor(self.background),
         }
 
-    def call(self, inputs=None):
+    def call(self, inputs):
         """Forward pass of the model."""
         # The inputs parameter is ignored - we use the grids set by set_grid
         # This is because Keras passes batched inputs, but we want to use the original grids
-        if self.x_grid is None or self.y_grid is None:
-            raise ValueError("Model grids not set. Call set_grid() before using the model.")
+        x_grid,y_grid = inputs
         
         # For JAX backend, ensure the model is properly built
         if not self.built and hasattr(self, 'input_params') and self.input_params is not None:
             # Force building if not already built
             self.build()
             
-        return self.sum(local=True)
+        return self.sum(x_grid,y_grid)
 
     @abstractmethod
     def model_fn(self, x, y, pos_x, pos_y, height, width, *args):
@@ -95,10 +88,12 @@ class ImageModel(keras.Model):
         """Calculate the volume of each peak."""
         pass
 
-    def _sum(self, local=True):
+    def _sum(self,x_grid:np.ndarray, y_grid:np.ndarray, local=True):
         """Calculate all peaks either globally or locally.
         
         Args:
+            x_grid (array): x_grid coordinates mesh
+            y_grid (array): y_grid coordinates mesh
             local (bool, optional): If True, calculate peaks locally within a fixed window. Defaults to False.
             
         Returns:
@@ -111,7 +106,7 @@ class ImageModel(keras.Model):
         if not local:
             # Calculate all peaks at once and sum them
             peaks = self.model_fn(
-                self.x_grid[:, :, None], self.y_grid[:, :, None],
+                x_grid[:, :, None], y_grid[:, :, None],
                 self.pos_x[None, None, :], self.pos_y[None, None, :],
                 self.height, self.width, *kargs
             )
@@ -119,8 +114,8 @@ class ImageModel(keras.Model):
         else:
             # Local calculation with parallel processing
             # width_max = keras.ops.max(self.input_params['width']) 
-            window_size = int(safe_convert_to_numpy(self.input_params['width'])*4)  # Use max width for the window size
-
+            window_size = int(np.max(safe_convert_to_numpy(self.width)*4))  # Use max width for the window size
+            
             # Create a local coordinate grid for the window
             window_x = keras.ops.arange(-window_size, window_size + 1, dtype='int32')
             window_y = keras.ops.arange(-window_size, window_size + 1, dtype='int32')
@@ -143,7 +138,7 @@ class ImageModel(keras.Model):
             global_y = keras.ops.expand_dims(local_y_grid, -1) + pos_y_int
 
             # Create a mask for coordinates that are within the image boundaries
-            mask = (global_x >= 0) & (global_x < self.x_grid.shape[1]) & (global_y >= 0) & (global_y < self.y_grid.shape[0])
+            mask = (global_x >= 0) & (global_x < x_grid.shape[1]) & (global_y >= 0) & (global_y < y_grid.shape[0])
 
             # Get the indices of valid elements where the mask is True.
             # valid_indices = keras.ops.where(mask)
@@ -157,7 +152,7 @@ class ImageModel(keras.Model):
             global_y_valid = keras.ops.take(keras.ops.reshape(global_y, (-1,)), flat_indices)
 
             # Create the final image tensor
-            total = keras.ops.zeros_like(self.x_grid, dtype='float32')
+            total = keras.ops.zeros_like(x_grid, dtype='float32')
             
             # Use the backend to scatter the local peaks onto the global image
             backend = keras.backend.backend()
@@ -183,7 +178,7 @@ class ImageModel(keras.Model):
 
             return total + self.background
 
-    def sum(self, local=True):
+    def sum(self,x_grid, y_grid, local=True):
         """Calculate sum of peaks using Keras.
         
         Args:
@@ -194,7 +189,7 @@ class ImageModel(keras.Model):
         Returns:
             array: Sum of all peaks plus background
         """
-        return self._sum(local=local)
+        return self._sum(x_grid, y_grid,local=local)
 
 class GaussianModel(ImageModel):
     """Gaussian peak model."""
@@ -248,7 +243,7 @@ class VoigtModel(ImageModel):
         super().set_params(params)
         # The ratio parameter will be handled by the base class update_params method
 
-    def build(self):
+    def build(self, input_shape=None):
         if self.input_params is None:
             raise ValueError("initial_params must be set before building the model.")
         # If already built and shapes match, do nothing
@@ -270,7 +265,7 @@ class VoigtModel(ImageModel):
             name="ratio"
         )
         # Call parent build method
-        super().build()
+        super().build(input_shape)
 
 
     def get_params(self):

@@ -123,8 +123,6 @@ class ImageFitting:
         self.x_grid = ops.convert_to_tensor(x_grid, dtype="float32")
         self.y_grid = ops.convert_to_tensor(y_grid, dtype="float32")
 
-        # Set the grids on the model
-        self.model.set_grid(self.x_grid, self.y_grid)
 
     def _create_model(self):
         """Create a new model instance based on the model type."""
@@ -138,7 +136,7 @@ class ImageFitting:
             raise ValueError(f"Model type {self.model_type} not supported.")
         return model
 
-    def predict(self, local: bool = True):
+    def predict(self, params: dict = None, local: bool = True):
         """Predict the image based on the model's current parameters.
 
         Args:
@@ -147,7 +145,10 @@ class ImageFitting:
         Returns:
             array: Predicted image
         """
-        prediction = self.model.sum(local=local)
+        if params is None:
+            params = self.params
+        self.model.set_params(params)
+        prediction = self.model.sum(self.x_grid, self.y_grid, local=local)
 
         # Handle periodic boundary conditions by rolling the image
         if self.pbc:
@@ -162,13 +163,8 @@ class ImageFitting:
                 (-1, 1),
             ]:
                 # Temporarily set shifted grids for periodic boundary conditions
-                original_x_grid, original_y_grid = self.model.x_grid, self.model.y_grid
-                self.model.set_grid(
-                    self.x_grid + i * self.nx, self.y_grid + j * self.ny
-                )
-                prediction += self.model.sum(local=local)
-                # Restore original grids
-                self.model.set_grid(original_x_grid, original_y_grid)
+                prediction += self.model.sum(self.x_grid + i * self.nx, self.y_grid + j * self.ny, local=local)
+        self.prediction = safe_convert_to_numpy(prediction)
         return prediction
 
     # Properties
@@ -392,7 +388,7 @@ class ImageFitting:
         self.params = params
         self.model.set_params(self.params)
         # Build the model with the correct input shape (grid shapes)
-        self.model.build()
+        self.model([self.x_grid, self.y_grid])
         return params
 
     # find atomic columns
@@ -1021,14 +1017,14 @@ class ImageFitting:
         tol: float = 1e-4,
         step_size: float = 0.01,
         verbose: bool = False,
-        batch_size: int = 1,
+        batch_size: int = 1024,
     ) -> dict[str, NDArray[Any]]:
         if image_tensor is None:
             image_tensor = self.image_tensor
         self.model.set_params(params)
 
         # Build the model with the correct input shape (grid shapes)
-        # self.model.build()
+        self.model.build()
 
         if self.backend == "torch":
             # PyTorch needs batch dimensions for inputs
@@ -1082,12 +1078,12 @@ class ImageFitting:
             verbose=verbose,
         )
         self.params = params
-        self.prediction = safe_convert_to_numpy(self.predict(local=local))
+        # self.prediction = safe_convert_to_numpy(self.predict(params, local=local))
 
         return params
 
     def _optimize_local_batch(
-        self, global_params, select_params, maxiter, tol, step_size, verbose=False,local: bool = True
+        self, local_target, select_params, maxiter, tol, step_size, verbose=False,local: bool = True
     ):
         """
         Optimize a local batch of parameters using a temporary model.
@@ -1102,38 +1098,24 @@ class ImageFitting:
         Returns:
             Dictionary of optimized parameters
         """
-        
-        # Calculate global prediction with full parameters
-        global_model = self._create_model()
-        global_model.set_params(global_params)
-        global_prediction = global_model.sum(local=local)
-        
+                
         # Create a temporary model for local optimization
         temp_model = self._create_model()
-        temp_model.set_grid(self.x_grid, self.y_grid)
         temp_model.set_params(select_params)
 
         # Build with the correct input shape (grid shapes)
-        temp_model.build()
+        temp_model([self.x_grid, self.y_grid])
         
-        # Calculate local prediction using the temporary model
-        local_prediction = temp_model.sum(local=local)
-        local_residual = global_prediction - local_prediction
-        local_target = ops.stop_gradient(self.image_tensor - local_residual)
-        
-        # Backend-specific input preparation for local optimization
-
         if self.backend == "torch":
+            # PyTorch needs batch dimensions for inputs
             local_target = ops.expand_dims(
                 local_target, 0
-            )  # Always need batch dimension for target
-            # PyTorch needs batch dimensions for inputs
+            )
             x_grid_batch = ops.expand_dims(self.x_grid, 0)
             y_grid_batch = ops.expand_dims(self.y_grid, 0)
             model_inputs = [x_grid_batch, y_grid_batch]
         else:
-            # JAX and TensorFlow: create dummy inputs with correct batch size
-            # The model uses grids set via set_grid(), so we just need dummy data with batch dimension
+            # JAX and TensorFlow
             model_inputs = [self.x_grid, self.y_grid]
             
         # Compile the temporary model
@@ -1198,10 +1180,19 @@ class ImageFitting:
                 atoms_selected = np.zeros(self.num_coordinates, dtype=bool)
                 atoms_selected[index] = True
                 select_params = self.select_params(params, atoms_selected)
+                
+                global_prediction = self.predict(params, local=local)
+                # Calculate local prediction using the temporary model
+                temp_model = self._create_model()
+                temp_model.set_params(select_params)
+                temp_model([self.x_grid, self.y_grid])
+                local_prediction = temp_model.sum(self.x_grid, self.y_grid,local=local)
+                local_residual = global_prediction - local_prediction
+                local_target = ops.stop_gradient(self.image_tensor - local_residual)
 
                 # Optimize the local batch using the dedicated function
                 optimized_select_params = self._optimize_local_batch(
-                    current_params, select_params, maxiter, tol, step_size, verbose
+                    local_target, select_params, maxiter, tol, step_size, verbose
                 )
                 clipped_optimized_select_params = self.clip_params(
                     optimized_select_params
@@ -1234,7 +1225,7 @@ class ImageFitting:
         self.converged = self.convergence(params, pre_params, tol)
         params = self.linear_estimator(params)
         self.params = params
-        self.prediction = safe_convert_to_numpy(self.predict(params))
+        # self.prediction = safe_convert_to_numpy(self.predict(params))
 
         return params
 
