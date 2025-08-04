@@ -6,11 +6,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 # Third-party library imports
-import keras
 import matplotlib.pyplot as plt
 import numpy as np
 from hyperspy.signals import Signal2D
-from keras import ops
 from matplotlib_scalebar.scalebar import ScaleBar
 from numpy.typing import NDArray
 from scipy.optimize import curve_fit, lsq_linear
@@ -45,6 +43,7 @@ from qem.utils import (
     safe_deepcopy_params,
 )
 from qem.voronoi import voronoi_integrate, voronoi_point_record
+import keras
 
 
 logging.basicConfig(level=logging.INFO)
@@ -116,12 +115,12 @@ class ImageFitting:
 
     def initialize_grid(self):
         """Initialize the coordinate grids for the model."""
-        self.image_tensor = ops.convert_to_tensor(self.image, dtype="float32")
-        x = ops.arange(self.nx, dtype="float32")
-        y = ops.arange(self.ny, dtype="float32")
-        x_grid, y_grid = ops.meshgrid(x, y)
-        self.x_grid = ops.convert_to_tensor(x_grid, dtype="float32")
-        self.y_grid = ops.convert_to_tensor(y_grid, dtype="float32")
+        self.image_tensor = keras.ops.convert_to_tensor(self.image, dtype="float32")
+        x = keras.ops.arange(self.nx, dtype="float32")
+        y = keras.ops.arange(self.ny, dtype="float32")
+        x_grid, y_grid = keras.ops.meshgrid(x, y)
+        self.x_grid = keras.ops.convert_to_tensor(x_grid, dtype="float32")
+        self.y_grid = keras.ops.convert_to_tensor(y_grid, dtype="float32")
 
 
     def _create_model(self):
@@ -389,7 +388,7 @@ class ImageFitting:
             params["background"] = init_background
 
         for key in params.keys():
-            params[key] = ops.convert_to_tensor(params[key], dtype="float32")
+            params[key] = keras.ops.convert_to_tensor(params[key], dtype="float32")
 
         self.params = params
         self.model.set_params(self.params)
@@ -811,10 +810,10 @@ class ImageFitting:
     def loss_val(self, params: dict):
         prediction = self.predict(params)
         diff = self.image_tensor - prediction
-        diff = ops.multiply(diff, self.window)
+        diff = keras.ops.multiply(diff, self.window)
         # damping the difference near the edge
-        mse = ops.sqrt(ops.mean(ops.square(diff)))
-        l1 = ops.mean(ops.abs(diff))
+        mse = keras.ops.sqrt(keras.ops.mean(keras.ops.square(diff)))
+        l1 = keras.ops.mean(keras.ops.abs(diff))
         return mse + l1
 
     def loss(self, y_true, y_pred):
@@ -838,9 +837,9 @@ class ImageFitting:
             window = keras.ops.convert_to_tensor(self.window, dtype="float32")
         else:
             window = self.window
-        diff = ops.multiply(diff, window)
-        mse = ops.sqrt(ops.mean(ops.square(diff)))
-        l1 = ops.mean(ops.abs(diff))
+        diff = keras.ops.multiply(diff, window)
+        mse = keras.ops.sqrt(keras.ops.mean(keras.ops.square(diff)))
+        l1 = keras.ops.mean(keras.ops.abs(diff))
         return mse + l1
 
     def residual(self, params: dict):
@@ -873,12 +872,12 @@ class ImageFitting:
         #     height[height < 0] = 0
 
         # Vectorized implementation using keras.ops
-        window_size = ops.cast(ops.max(width) * 5, dtype="int32")
-        x = ops.arange(-window_size, window_size + 1, 1, dtype="float32")
-        y = ops.arange(-window_size, window_size + 1, 1, dtype="float32")
-        local_x, local_y = ops.meshgrid(x, y, indexing="xy")
+        window_size = keras.ops.cast(keras.ops.max(width) * 5, dtype="int32")
+        x = keras.ops.arange(-window_size, window_size + 1, 1, dtype="float32")
+        y = keras.ops.arange(-window_size, window_size + 1, 1, dtype="float32")
+        local_x, local_y = keras.ops.meshgrid(x, y, indexing="xy")
 
-        input_params = (ops.mod(pos_x, 1), ops.mod(pos_y, 1), height, width)
+        input_params = (keras.ops.mod(pos_x, 1), keras.ops.mod(pos_y, 1), height, width)
         if ratio is not None:
             input_params += (ratio,)
 
@@ -886,11 +885,11 @@ class ImageFitting:
             local_x[..., None], local_y[..., None], *input_params
         )
 
-        pos_x_int = ops.floor(pos_x)
-        pos_y_int = ops.floor(pos_y)
+        pos_x_int = keras.ops.floor(pos_x)
+        pos_y_int = keras.ops.floor(pos_y)
 
-        global_x = ops.expand_dims(local_x, -1) + pos_x_int
-        global_y = ops.expand_dims(local_y, -1) + pos_y_int
+        global_x = keras.ops.expand_dims(local_x, -1) + pos_x_int
+        global_y = keras.ops.expand_dims(local_y, -1) + pos_y_int
 
         mask = (
             (global_x >= 0)
@@ -900,12 +899,12 @@ class ImageFitting:
         )
 
         # Get the indices of valid elements where the mask is True.
-        valid_indices = ops.where(mask)
+        valid_indices = keras.ops.where(mask)
 
         # Flatten the tensors and calculate 1D indices to replicate gather_nd,
         # ensuring compatibility with Keras 2 and other backends.
-        shape = ops.shape(peak_local)
-        # ops.where returns a tuple of index tensors, one for each dimension.
+        shape = keras.ops.shape(peak_local)
+        # keras.ops.where returns a tuple of index tensors, one for each dimension.
         # We access them with tuple indexing, not array slicing.
         flat_indices = (
             valid_indices[0] * (shape[1] * shape[2])
@@ -914,31 +913,31 @@ class ImageFitting:
         )
 
         # Gather the valid data from the flattened tensors using the 1D indices.
-        data_tensor = ops.take(ops.reshape(peak_local, (-1,)), flat_indices)
-        global_x_valid = ops.take(ops.reshape(global_x, (-1,)), flat_indices)
-        global_y_valid = ops.take(ops.reshape(global_y, (-1,)), flat_indices)
+        data_tensor = keras.ops.take(keras.ops.reshape(peak_local, (-1,)), flat_indices)
+        global_x_valid = keras.ops.take(keras.ops.reshape(global_x, (-1,)), flat_indices)
+        global_y_valid = keras.ops.take(keras.ops.reshape(global_y, (-1,)), flat_indices)
 
         # The column indices correspond to the third dimension of the original tensors.
         cols_tensor = valid_indices[2]
 
-        rows_tensor = ops.cast(global_y_valid, "int32") * self.nx + ops.cast(
+        rows_tensor = keras.ops.cast(global_y_valid, "int32") * self.nx + keras.ops.cast(
             global_x_valid, "int32"
         )
         if self.fit_background:
-            background_rows = ops.reshape(self.y_grid, (-1,)) * self.nx + ops.reshape(
+            background_rows = keras.ops.reshape(self.y_grid, (-1,)) * self.nx + keras.ops.reshape(
                 self.x_grid, (-1,)
             )
-            rows_tensor = ops.concatenate(
-                [rows_tensor, ops.cast(background_rows, "int32")]
+            rows_tensor = keras.ops.concatenate(
+                [rows_tensor, keras.ops.cast(background_rows, "int32")]
             )
-            cols_tensor = ops.concatenate(
+            cols_tensor = keras.ops.concatenate(
                 [
                     cols_tensor,
-                    ops.full((self.nx * self.ny,), self.num_coordinates, dtype="int32"),
+                    keras.ops.full((self.nx * self.ny,), self.num_coordinates, dtype="int32"),
                 ]
             )
-            data_tensor = ops.concatenate(
-                [data_tensor, ops.ones((self.nx * self.ny,), dtype="float32")]
+            data_tensor = keras.ops.concatenate(
+                [data_tensor, keras.ops.ones((self.nx * self.ny,), dtype="float32")]
             )
             shape = (self.nx * self.ny, self.num_coordinates + 1)
         else:
@@ -991,7 +990,7 @@ class ImageFitting:
 
         if self.fit_background:
             background = solution[-1] if solution[-1] > 0 else self.init_background
-            params["background"] = ops.convert_to_tensor(background)
+            params["background"] = keras.ops.convert_to_tensor(background)
             height_scale = solution[:-1]
         else:
             height_scale = solution
@@ -1010,7 +1009,7 @@ class ImageFitting:
                 "The height_scale has values smaller than 0.1, the linear estimator is probably not accurate. I will limit it to 0.1 but be careful with the results."
             )
             height_scale[height_scale < 0.1] = 0.1
-        params["height"] = ops.convert_to_tensor(height_scale) * ops.convert_to_tensor(
+        params["height"] = keras.ops.convert_to_tensor(height_scale) * keras.ops.convert_to_tensor(
             params["height"]
         )
         self.params = params
@@ -1037,14 +1036,14 @@ class ImageFitting:
         # Backend-specific input preparation
         if self.backend == "torch":
             # PyTorch needs batch dimensions for inputs and target
-            image_tensor = ops.expand_dims(image_tensor, 0)
-            x_grid = ops.expand_dims(self.x_grid, 0)
-            y_grid = ops.expand_dims(self.y_grid, 0)
+            image_tensor = keras.ops.expand_dims(image_tensor, 0)
+            x_grid = keras.ops.expand_dims(self.x_grid, 0)
+            y_grid = keras.ops.expand_dims(self.y_grid, 0)
             model_inputs = [x_grid, y_grid]
         else:
             # JAX and TensorFlow can handle without explicit batch dimension for inputs
             # but still need batch dimension for target
-            # image_tensor = ops.expand_dims(image_tensor, 0)
+            # image_tensor = keras.ops.expand_dims(image_tensor, 0)
             model_inputs = [self.x_grid, self.y_grid]
         
         self.model.compile(
@@ -1121,13 +1120,13 @@ class ImageFitting:
         
         if self.backend == "torch":
             # PyTorch needs batch dimensions for inputs and target
-            local_target = ops.expand_dims(local_target, 0)
-            x_grid_batch = ops.expand_dims(self.x_grid, 0)
-            y_grid_batch = ops.expand_dims(self.y_grid, 0)
+            local_target = keras.ops.expand_dims(local_target, 0)
+            x_grid_batch = keras.ops.expand_dims(self.x_grid, 0)
+            y_grid_batch = keras.ops.expand_dims(self.y_grid, 0)
             model_inputs = [x_grid_batch, y_grid_batch]
         else:
             # JAX and TensorFlow
-            # local_target = ops.expand_dims(local_target, 0)
+            # local_target = keras.ops.expand_dims(local_target, 0)
             model_inputs = [self.x_grid, self.y_grid]
             
         # Compile the temporary model
@@ -1201,7 +1200,7 @@ class ImageFitting:
                     temp_model.build(input_shape=[(None, *self.x_grid.shape), (None, *self.y_grid.shape)])
                 local_prediction = temp_model.sum(self.x_grid, self.y_grid, local=local)
                 local_residual = global_prediction - local_prediction
-                local_target = ops.stop_gradient(self.image_tensor - local_residual)
+                local_target = keras.ops.stop_gradient(self.image_tensor - local_residual)
 
                 # Optimize the local batch using the dedicated function
                 optimized_select_params = self._optimize_local_batch(
@@ -1265,7 +1264,7 @@ class ImageFitting:
 
         pos_x = params["pos_x"]
         pos_y = params["pos_y"]
-        coords = ops.stack([pos_y, pos_x])
+        coords = keras.ops.stack([pos_y, pos_x])
         num_coordinates = coords.shape[1]
 
         # Generate Voronoi cell map
@@ -1298,8 +1297,8 @@ class ImageFitting:
             cropped_img[~cropped_mask] = 0
 
             # Prepare grid for fitting
-            x_c, y_c = ops.meshgrid(
-                ops.arange(x0, x1), ops.arange(y0, y1), indexing="xy"
+            x_c, y_c = keras.ops.meshgrid(
+                keras.ops.arange(x0, x1), keras.ops.arange(y0, y1), indexing="xy"
             )
             x_c = safe_convert_to_numpy(x_c)
             y_c = safe_convert_to_numpy(y_c)
@@ -1437,7 +1436,7 @@ class ImageFitting:
                 continue  # Skip keys that are not in pre_params
 
             # Calculate the update difference
-            update = ops.abs(value - pre_params[key])
+            update = keras.ops.abs(value - pre_params[key])
 
             # Check convergence based on parameter type
             if key in ["pos_x", "pos_y"]:
@@ -1449,7 +1448,7 @@ class ImageFitting:
             else:
                 # Avoid division by zero and calculate relative update
                 value_with_offset = value + 1e-10
-                rate = ops.abs(update / value_with_offset).mean()
+                rate = keras.ops.abs(update / value_with_offset).mean()
                 logging.info(f"Convergence rate for {key} = {rate}")
                 if rate > tol:
                     logging.info("Convergence not reached")
@@ -1480,7 +1479,7 @@ class ImageFitting:
     ):
         for key, value in local_params.items():
             # Always convert to tensor (JAX or NumPy) to avoid deleted array refs
-            value = ops.convert_to_tensor(value)
+            value = keras.ops.convert_to_tensor(value)
             shared_value_list = ["background"]
             if self.same_width:
                 shared_value_list += ["width", "ratio"]
@@ -1493,17 +1492,17 @@ class ImageFitting:
                         params[key] = params[key].at[mask].set(value[mask_local])
                 elif keras.backend.backend() == "tensorflow":
                     if mask_local is None:
-                        params[key] = ops.scatter_update(params[key], mask, value)
+                        params[key] = keras.ops.scatter_update(params[key], mask, value)
                     else:
-                        params[key] = ops.scatter_update(
+                        params[key] = keras.ops.scatter_update(
                             params[key], mask, value[mask_local]
                         )
                 elif keras.backend.backend() == "torch":
                     if mask_local is None:
-                        params[key] = params[key].scatter(0, ops.where(mask)[0], value)
+                        params[key] = params[key].scatter(0, keras.ops.where(mask)[0], value)
                     else:
                         params[key] = params[key].scatter(
-                            0, ops.where(mask)[0], value[mask_local]
+                            0, keras.ops.where(mask)[0], value[mask_local]
                         )
             else:
                 weight = mask.sum() / self.num_coordinates
@@ -1514,17 +1513,17 @@ class ImageFitting:
     def clip_params(self, params: dict):
         for key, value in params.items():
             if key == "pos_x":
-                params[key] = ops.clip(value, 0, self.nx - 1)
+                params[key] = keras.ops.clip(value, 0, self.nx - 1)
             elif key == "pos_y":
-                params[key] = ops.clip(value, 0, self.ny - 1)
+                params[key] = keras.ops.clip(value, 0, self.ny - 1)
             elif key == "height":
-                params[key] = ops.clip(value, 0, self.image.max())
+                params[key] = keras.ops.clip(value, 0, self.image.max())
             elif key == "width":
-                params[key] = ops.clip(value, 1, min(self.nx, self.ny) / 2)
+                params[key] = keras.ops.clip(value, 1, min(self.nx, self.ny) / 2)
             elif key == "ratio":
-                params[key] = ops.clip(value, 0, 1)
+                params[key] = keras.ops.clip(value, 0, 1)
             elif key == "background":
-                params[key] = ops.clip(value, 0, np.max(self.image))
+                params[key] = keras.ops.clip(value, 0, np.max(self.image))
         return params
 
     def update_coordinates(self):
