@@ -41,7 +41,7 @@ class ImageModel(keras.Model):
             else:
                 raise ValueError(f"Parameter {key} does not exist in the model.")
 
-    def build(self,input_shape=None):
+    def build(self, input_shape):
         if self.input_params is None:
             raise ValueError("initial_params must be set before building the model.")
         # If already built and shapes match, do nothing
@@ -66,16 +66,8 @@ class ImageModel(keras.Model):
 
     def call(self, inputs):
         """Forward pass of the model."""
-        # The inputs parameter is ignored - we use the grids set by set_grid
-        # This is because Keras passes batched inputs, but we want to use the original grids
-        x_grid,y_grid = inputs
-        
-        # For JAX backend, ensure the model is properly built
-        if not self.built and hasattr(self, 'input_params') and self.input_params is not None:
-            # Force building if not already built
-            self.build()
-            
-        return self.sum(x_grid,y_grid)
+        x_grid, y_grid = inputs
+        return self.sum(x_grid, y_grid)
 
     @abstractmethod
     def model_fn(self, x, y, pos_x, pos_y, height, width, *args):
@@ -114,11 +106,12 @@ class ImageModel(keras.Model):
         else:
             # Local calculation with parallel processing
             # width_max = keras.ops.max(self.input_params['width']) 
-            window_size = int(np.max(safe_convert_to_numpy(self.width)*4))  # Use max width for the window size
+            width_max = keras.ops.max(self.width)
+            window_size = keras.ops.cast(keras.ops.ceil(width_max * 4), dtype="int32")
             
             # Create a local coordinate grid for the window
-            window_x = keras.ops.arange(-window_size, window_size + 1, dtype='int32')
-            window_y = keras.ops.arange(-window_size, window_size + 1, dtype='int32')
+            window_x = keras.ops.arange(-window_size, window_size + 1, dtype=x_grid.dtype)
+            window_y = keras.ops.arange(-window_size, window_size + 1, dtype=y_grid.dtype)
             local_x_grid, local_y_grid = keras.ops.meshgrid(window_x, window_y)
 
             # Calculate local peaks relative to their centers (0,0)

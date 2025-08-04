@@ -1024,7 +1024,7 @@ class ImageFitting:
         self.model.set_params(params)
 
         # Build the model with the correct input shape (grid shapes)
-        self.model.build()
+        self.model.build(input_shape=[(None, *self.x_grid.shape), (None, *self.y_grid.shape)])
 
         if self.backend == "torch":
             # PyTorch needs batch dimensions for inputs
