@@ -80,7 +80,7 @@ class ImageModel(keras.Model):
         """Calculate the volume of each peak."""
         pass
 
-    def _sum(self,x_grid:np.ndarray, y_grid:np.ndarray, local=True):
+    def sum(self, x_grid: np.ndarray, y_grid: np.ndarray, local=True):
         """Calculate all peaks either globally or locally.
         
         Args:
@@ -91,6 +91,13 @@ class ImageModel(keras.Model):
         Returns:
             array: Sum of all peaks plus background
         """
+        # Handle batch dimensions - if input has batch dimension, process accordingly
+        has_batch_dim = len(x_grid.shape) > 2
+        if has_batch_dim:
+            # For batched inputs, squeeze out the batch dimension for processing
+            x_grid = keras.ops.squeeze(x_grid, axis=0)
+            y_grid = keras.ops.squeeze(y_grid, axis=0)
+        
         kargs = []
         if hasattr(self, 'ratio'):
             kargs.append(self.ratio)
@@ -102,10 +109,9 @@ class ImageModel(keras.Model):
                 self.pos_x[None, None, :], self.pos_y[None, None, :],
                 self.height, self.width, *kargs
             )
-            return keras.ops.sum(peaks, axis=-1) + self.background
+            result = keras.ops.sum(peaks, axis=-1) + self.background
         else:
             # Local calculation with parallel processing
-            # width_max = keras.ops.max(self.input_params['width']) 
             width_max = keras.ops.max(self.width)
             window_size = keras.ops.cast(keras.ops.ceil(width_max * 4), dtype="int32")
             
@@ -133,9 +139,6 @@ class ImageModel(keras.Model):
             # Create a mask for coordinates that are within the image boundaries
             mask = (global_x >= 0) & (global_x < x_grid.shape[1]) & (global_y >= 0) & (global_y < y_grid.shape[0])
 
-            # Get the indices of valid elements where the mask is True.
-            # valid_indices = keras.ops.where(mask)
-            
             # Flatten the mask to get 1D indices of valid elements.
             flat_indices = keras.ops.where(keras.ops.reshape(mask, (-1,)))[0]
 
@@ -152,7 +155,7 @@ class ImageModel(keras.Model):
             if backend == 'torch':
                 import torch
                 # Calculate flat indices for scatter_add
-                indices = (keras.ops.cast(global_y_valid, dtype='int32') * total.shape[1] + keras.ops.cast(global_x_valid, dtype='int32'))
+                indices = (keras.ops.cast(global_y_valid, dtype='int64') * total.shape[1] + keras.ops.cast(global_x_valid, dtype='int64'))
                 
                 total_flat = total.flatten()
                 # Use a non-in-place operation to help PyTorch's autograd manage memory
@@ -169,20 +172,15 @@ class ImageModel(keras.Model):
                 indices = keras.ops.stack([keras.ops.cast(global_y_valid, dtype='int32'), keras.ops.cast(global_x_valid, dtype='int32')], axis=-1)
                 total = tf.tensor_scatter_nd_add(total, indices, valid_values)
 
-            return total + self.background
-
-    def sum(self,x_grid, y_grid, local=True):
-        """Calculate sum of peaks using Keras.
-        
-        Args:
-            x_grid (array): x_grid coordinates mesh
-            y_grid (array): y_grid coordinates mesh
-            local (bool, optional): If True, calculate peaks locally within a fixed window. Defaults to False.
+            result = total + self.background
             
-        Returns:
-            array: Sum of all peaks plus background
-        """
-        return self._sum(x_grid, y_grid,local=local)
+        # If input had batch dimension, add it back to the result
+        if has_batch_dim:
+            result = keras.ops.expand_dims(result, axis=0)
+            
+        return result
+
+
 
 class GaussianModel(ImageModel):
     """Gaussian peak model."""

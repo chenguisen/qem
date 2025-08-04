@@ -140,6 +140,7 @@ class ImageFitting:
         """Predict the image based on the model's current parameters.
 
         Args:
+            params (dict, optional): Parameters to use for prediction. If None, uses current params.
             local (bool, optional): If True, calculate peaks locally. Defaults to False.
 
         Returns:
@@ -148,6 +149,11 @@ class ImageFitting:
         if params is None:
             params = self.params
         self.model.set_params(params)
+        
+        # Ensure model is built
+        if not self.model.built:
+            self.model.build(input_shape=[(None, *self.x_grid.shape), (None, *self.y_grid.shape)])
+        
         prediction = self.model.sum(self.x_grid, self.y_grid, local=local)
 
         # Handle periodic boundary conditions by rolling the image
@@ -388,7 +394,8 @@ class ImageFitting:
         self.params = params
         self.model.set_params(self.params)
         # Build the model with the correct input shape (grid shapes)
-        self.model([self.x_grid, self.y_grid])
+        if not self.model.built:
+            self.model.build(input_shape=[(None, *self.x_grid.shape), (None, *self.y_grid.shape)])
         return params
 
     # find atomic columns
@@ -1024,15 +1031,20 @@ class ImageFitting:
         self.model.set_params(params)
 
         # Build the model with the correct input shape (grid shapes)
-        self.model.build(input_shape=[(None, *self.x_grid.shape), (None, *self.y_grid.shape)])
+        if not self.model.built:
+            self.model.build(input_shape=[(None, *self.x_grid.shape), (None, *self.y_grid.shape)])
 
+        # Backend-specific input preparation
         if self.backend == "torch":
-            # PyTorch needs batch dimensions for inputs
-            image_tensor = ops.expand_dims(image_tensor, 0)  # Always need batch dimension for target
+            # PyTorch needs batch dimensions for inputs and target
+            image_tensor = ops.expand_dims(image_tensor, 0)
             x_grid = ops.expand_dims(self.x_grid, 0)
             y_grid = ops.expand_dims(self.y_grid, 0)
             model_inputs = [x_grid, y_grid]
         else:
+            # JAX and TensorFlow can handle without explicit batch dimension for inputs
+            # but still need batch dimension for target
+            # image_tensor = ops.expand_dims(image_tensor, 0)
             model_inputs = [self.x_grid, self.y_grid]
         
         self.model.compile(
@@ -1078,12 +1090,12 @@ class ImageFitting:
             verbose=verbose,
         )
         self.params = params
-        # self.prediction = safe_convert_to_numpy(self.predict(params, local=local))
+        self.prediction = safe_convert_to_numpy(self.predict(params, local=local))
 
         return params
 
     def _optimize_local_batch(
-        self, local_target, select_params, maxiter, tol, step_size, verbose=False,local: bool = True
+        self, local_target, select_params, maxiter, tol, step_size, verbose=False, local: bool = True
     ):
         """
         Optimize a local batch of parameters using a temporary model.
@@ -1104,18 +1116,18 @@ class ImageFitting:
         temp_model.set_params(select_params)
 
         # Build with the correct input shape (grid shapes)
-        temp_model([self.x_grid, self.y_grid])
+        if not temp_model.built:
+            temp_model.build(input_shape=[(None, *self.x_grid.shape), (None, *self.y_grid.shape)])
         
         if self.backend == "torch":
-            # PyTorch needs batch dimensions for inputs
-            local_target = ops.expand_dims(
-                local_target, 0
-            )
+            # PyTorch needs batch dimensions for inputs and target
+            local_target = ops.expand_dims(local_target, 0)
             x_grid_batch = ops.expand_dims(self.x_grid, 0)
             y_grid_batch = ops.expand_dims(self.y_grid, 0)
             model_inputs = [x_grid_batch, y_grid_batch]
         else:
             # JAX and TensorFlow
+            # local_target = ops.expand_dims(local_target, 0)
             model_inputs = [self.x_grid, self.y_grid]
             
         # Compile the temporary model
@@ -1185,8 +1197,9 @@ class ImageFitting:
                 # Calculate local prediction using the temporary model
                 temp_model = self._create_model()
                 temp_model.set_params(select_params)
-                temp_model([self.x_grid, self.y_grid])
-                local_prediction = temp_model.sum(self.x_grid, self.y_grid,local=local)
+                if not temp_model.built:
+                    temp_model.build(input_shape=[(None, *self.x_grid.shape), (None, *self.y_grid.shape)])
+                local_prediction = temp_model.sum(self.x_grid, self.y_grid, local=local)
                 local_residual = global_prediction - local_prediction
                 local_target = ops.stop_gradient(self.image_tensor - local_residual)
 
@@ -1225,7 +1238,7 @@ class ImageFitting:
         self.converged = self.convergence(params, pre_params, tol)
         params = self.linear_estimator(params)
         self.params = params
-        # self.prediction = safe_convert_to_numpy(self.predict(params))
+        self.prediction = safe_convert_to_numpy(self.predict(params))
 
         return params
 
