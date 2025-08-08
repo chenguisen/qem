@@ -7,7 +7,7 @@ from numba import jit as njit
 load_dotenv()
 import keras
 
-from qem.utils import safe_convert_to_numpy
+from qem.utils import safe_convert_to_tensor
 
 class ImageModel(keras.Model):
     """Base class for all image models."""
@@ -31,13 +31,19 @@ class ImageModel(keras.Model):
 
     def update_params(self, params):
         """Update the model parameters (values only, not shapes)."""
+        # Configuration parameters that are not model weights
+        config_params = {'same_width', 'atom_types'}
+        
         for key, value in params.items():
-            if hasattr(self, key):
+            if key in config_params:
+                # Skip configuration parameters - they're handled in input_params
+                continue
+            elif hasattr(self, key):
                 current_value = getattr(self, key)
                 if isinstance(current_value, keras.Variable):
                     current_value.assign(value)
                 else:
-                    setattr(self, key, value)
+                    pass
             else:
                 raise ValueError(f"Parameter {key} does not exist in the model.")
 
@@ -98,16 +104,24 @@ class ImageModel(keras.Model):
             x_grid = keras.ops.squeeze(x_grid, axis=0)
             y_grid = keras.ops.squeeze(y_grid, axis=0)
         
-        kargs = []
-        if hasattr(self, 'ratio'):
-            kargs.append(self.ratio)
+        width_ratio_kargs = []
+        if self.input_params['same_width']:
+            atom_types = keras.ops.cast(safe_convert_to_tensor(self.input_params['atom_types']), dtype='int32')
+            width = self.width[atom_types]
+            ratio = self.ratio[atom_types] if hasattr(self, 'ratio') else None
+            width_ratio_kargs = (width, ratio) if ratio is not None else (width,)
+        else:
+            width = self.width
+            ratio = self.ratio if hasattr(self, 'ratio') else None
+            width_ratio_kargs = (width, ratio) if ratio is not None else (width,)
 
         if not local:
             # Calculate all peaks at once and sum them
+
             peaks = self.model_fn(
                 x_grid[:, :, None], y_grid[:, :, None],
                 self.pos_x[None, None, :], self.pos_y[None, None, :],
-                self.height, self.width, *kargs
+                self.height, *width_ratio_kargs
             )
             result = keras.ops.sum(peaks, axis=-1) + self.background
         else:
@@ -122,9 +136,7 @@ class ImageModel(keras.Model):
 
             # Calculate local peaks relative to their centers (0,0)
             # The positions are implicitly handled by where we add the peaks back.
-            input_params = (keras.ops.mod(self.pos_x, 1), keras.ops.mod(self.pos_y, 1), self.height, self.width)
-            if hasattr(self, 'ratio'):
-                input_params += (self.ratio,)
+            input_params = (keras.ops.mod(self.pos_x, 1), keras.ops.mod(self.pos_y, 1), self.height, *width_ratio_kargs)
             
             peak_local = self.model_fn(local_x_grid[..., None], local_y_grid[..., None], *input_params)
 

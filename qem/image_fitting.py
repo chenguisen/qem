@@ -169,7 +169,7 @@ class ImageFitting:
             ]:
                 # Temporarily set shifted grids for periodic boundary conditions
                 prediction += self.model.sum(self.x_grid + i * self.nx, self.y_grid + j * self.ny, local=local)
-        self.prediction = safe_convert_to_numpy(prediction)
+        # self.prediction = safe_convert_to_numpy(prediction)
         return prediction
 
     # Properties
@@ -352,9 +352,6 @@ class ImageFitting:
         else:
             self.init_background = init_background
 
-        # Set background in model
-        self.model.background = init_background
-
         # Initialize heights from image values
         height = (
             self.image[pos_y.astype(int), pos_x.astype(int)].ravel() - init_background
@@ -363,7 +360,7 @@ class ImageFitting:
 
         # Initialize width parameters based on model type
         if self.same_width:
-            width = np.tile(width, 1).astype(float)
+            width = np.tile(width, self.num_atom_types).astype(float)
         else:
             width = np.tile(width, self.num_coordinates).astype(float)
 
@@ -372,10 +369,11 @@ class ImageFitting:
             "pos_x": pos_x,
             "pos_y": pos_y,
             "height": height,
+            "width": width,
+            "background": init_background,
+            "same_width": self.same_width,
+            "atom_types": self.atom_types
         }
-
-        # Add model-specific parameters
-        params["width"] = width
 
         if isinstance(self.model, VoigtModel):
             if self.same_width:
@@ -384,13 +382,11 @@ class ImageFitting:
                 ratio = np.tile(0.9, self.num_coordinates).astype(float)
             params["ratio"] = ratio
 
-        if self.fit_background:
-            params["background"] = init_background
-
         for key in params.keys():
             params[key] = keras.ops.convert_to_tensor(params[key], dtype="float32")
-
+        
         self.params = params
+        self.model = self._create_model()
         self.model.set_params(self.params)
         # Build the model with the correct input shape (grid shapes)
         if not self.model.built:
@@ -957,7 +953,7 @@ class ImageFitting:
         # create the target as the image
         b = safe_convert_to_numpy(self.image_tensor).ravel()
         if not self.fit_background:
-            b = b - safe_convert_to_numpy(self.init_background)
+            b = b - safe_convert_to_numpy(params["background"])
         # solve the linear equation
         try:
             # Attempt to solve the linear system
@@ -1472,6 +1468,8 @@ class ImageFitting:
             for key, value in params.items():
                 if key != "background":
                     select_params[key] = value[mask]
+        select_params['same_width'] = params['same_width']
+        select_params['atom_types'] = params['atom_types'][mask]
         return select_params
 
     def update_from_local_params(
