@@ -149,9 +149,9 @@ class ImageFitting:
             params = self.params
         self.model.set_params(params)
         
-        # Ensure model is built
+        # # Ensure model is built
         if not self.model.built:
-            self.model.build(input_shape=[(None, *self.x_grid.shape), (None, *self.y_grid.shape)])
+            self.model.build()
         
         prediction = self.model.sum(self.x_grid, self.y_grid, local=local)
 
@@ -390,7 +390,7 @@ class ImageFitting:
         self.model.set_params(self.params)
         # Build the model with the correct input shape (grid shapes)
         if not self.model.built:
-            self.model.build(input_shape=[(None, *self.x_grid.shape), (None, *self.y_grid.shape)])
+            self.model.build()
         return params
 
     # find atomic columns
@@ -835,8 +835,8 @@ class ImageFitting:
             window = self.window
         diff = keras.ops.multiply(diff, window)
         mse = keras.ops.sqrt(keras.ops.mean(keras.ops.square(diff)))
-        l1 = keras.ops.mean(keras.ops.abs(diff))
-        return mse + l1
+        # l1 = keras.ops.mean(keras.ops.abs(diff))
+        return mse
 
     def residual(self, params: dict):
         # Compute the sum of the Gaussians
@@ -1027,7 +1027,7 @@ class ImageFitting:
 
         # Build the model with the correct input shape (grid shapes)
         if not self.model.built:
-            self.model.build(input_shape=[(None, *self.x_grid.shape), (None, *self.y_grid.shape)])
+            self.model.build()
 
         # Backend-specific input preparation
         if self.backend == "torch":
@@ -1089,77 +1089,9 @@ class ImageFitting:
 
         return params
 
-    def _optimize_local_batch(
-        self, local_target, select_params, maxiter, tol, step_size, verbose=False, local: bool = True
-    ):
-        """
-        Optimize a local batch of parameters using a temporary model.
-
-        Args:
-            select_params: Dictionary of selected parameters for the batch
-            maxiter: Maximum number of iterations
-            tol: Tolerance for early stopping
-            step_size: Learning rate
-            verbose: Whether to show verbose output
-
-        Returns:
-            Dictionary of optimized parameters
-        """
-                
-        # Create a temporary model for local optimization
-        temp_model = self._create_model()
-        temp_model.set_params(select_params)
-
-        # Build with the correct input shape (grid shapes)
-        if not temp_model.built:
-            temp_model.build(input_shape=[(None, *self.x_grid.shape), (None, *self.y_grid.shape)])
-        
-        if self.backend == "torch":
-            # PyTorch needs batch dimensions for inputs and target
-            local_target = keras.ops.expand_dims(local_target, 0)
-            x_grid_batch = keras.ops.expand_dims(self.x_grid, 0)
-            y_grid_batch = keras.ops.expand_dims(self.y_grid, 0)
-            model_inputs = [x_grid_batch, y_grid_batch]
-        else:
-            # JAX and TensorFlow
-            # local_target = keras.ops.expand_dims(local_target, 0)
-            model_inputs = [self.x_grid, self.y_grid]
-            
-        # Compile the temporary model
-        temp_model.compile(
-            optimizer=keras.optimizers.Adam(learning_rate=step_size), loss=self.loss
-        )
-
-        # Set up early stopping
-        early_stopping = keras.callbacks.EarlyStopping(
-            monitor="loss",
-            min_delta=tol,
-            patience=100,
-            verbose=verbose,
-            restore_best_weights=True,
-        )
-
-        # Train the temporary model
-        temp_model.fit(
-            x=model_inputs,
-            y=local_target,
-            epochs=maxiter,
-            verbose=verbose,
-            callbacks=[early_stopping],
-            batch_size=1,
-        )
-
-        # Get optimized parameters
-        optimized_params = temp_model.get_params()
-
-        # Clean up the temporary model
-        del temp_model
-
-        return optimized_params
-
     def fit_stochastic(
         self,
-        params: dict = None,  # initial params, optional
+        params: dict = None,
         num_epoch: int = 5,
         batch_size: int = 500,
         maxiter: int = 50,
@@ -1169,74 +1101,125 @@ class ImageFitting:
         local: bool = True,
         plot: bool = False,
     ):
+        """
+        Fits model parameters stochastically by optimizing random batches of coordinates.
+
+        This method avoids the high overhead of model creation and compilation inside
+        the training loop by using a single, reusable model for batch optimization.
+        """
+        # --- 1. Initialization ---
         if params is None:
             params = self.params if self.params is not None else self.init_params()
 
+        # Create and compile a single, reusable model for optimizing local batches.
+        # This is the key performance improvement, as compilation happens only ONCE.
+        local_model_template = self._create_model()
+        local_model_template.compile(
+            optimizer=keras.optimizers.Adam(learning_rate=step_size),
+            loss=self.loss,
+        )
+
+        # Prepare model inputs once, handling backend-specific batching.
+        if self.backend == "torch":
+            model_inputs = [keras.ops.expand_dims(g, 0) for g in (self.x_grid, self.y_grid)]
+        else:
+            model_inputs = [self.x_grid, self.y_grid]
+
+        # --- 2. Main Training Loop ---
         self.converged = False
-        while self.converged is False and num_epoch > 0:
+        for epoch in range(num_epoch):
+            print(f"Epoch {epoch + 1}/{num_epoch}")
             params = self.linear_estimator(params)
+            params = {k: np.array(v) for k, v in params.items()}
             pre_params = safe_deepcopy_params(params)
-            num_epoch -= 1
-            random_batches = get_random_indices_in_batches(
-                self.num_coordinates, batch_size
-            )
-            image = self.image_tensor
+            
+            random_batches = get_random_indices_in_batches(self.num_coordinates, batch_size)
 
-            for index in tqdm(random_batches, desc="Fitting random batch"):
-                current_params = safe_deepcopy_params(params)
-                atoms_selected = np.zeros(self.num_coordinates, dtype=bool)
-                atoms_selected[index] = True
-                select_params = self.select_params(params, atoms_selected)
+            for batch_indices in tqdm(random_batches, desc="Fitting random batch", leave=False):
+                # --- 3. Per-Batch Optimization ---
+                if len(batch_indices) < batch_size:
+                    local_model = self._create_model()
+                    local_model.compile(
+                        optimizer=keras.optimizers.Adam(learning_rate=step_size),
+                        loss=self.loss,
+                    )
+                else:
+                    local_model = local_model_template
+
+                # a) Calculate the target for the local model. The target is the original image
+                #    minus the contribution from all *other* (non-batch) atoms.
+                params_without_batch = safe_deepcopy_params(params)
+                # By zeroing out the height, we effectively remove the batch atoms' contribution.
+                height_tensor = params_without_batch['height']
+                update_indices = keras.ops.expand_dims(batch_indices, axis=-1)
+                update_values = keras.ops.zeros(keras.ops.shape(batch_indices))
+                params_without_batch['height'] = keras.ops.scatter_update(
+                    height_tensor,
+                    update_indices,
+                    update_values
+                    )
+                prediction_from_others = self.predict(params_without_batch, local=local) - params_without_batch['background']
+                local_target = self.image_tensor - prediction_from_others
                 
-                global_prediction = self.predict(params, local=local)
-                # Calculate local prediction using the temporary model
-                temp_model = self._create_model()
-                temp_model.set_params(select_params)
-                if not temp_model.built:
-                    temp_model.build(input_shape=[(None, *self.x_grid.shape), (None, *self.y_grid.shape)])
-                local_prediction = temp_model.sum(self.x_grid, self.y_grid, local=local)
-                local_residual = global_prediction - local_prediction
-                local_target = keras.ops.stop_gradient(self.image_tensor - local_residual)
+                # b) Isolate the parameters for the current batch and set them in the local model.
+                atoms_selected_mask = np.zeros(self.num_coordinates, dtype=bool)
+                atoms_selected_mask[batch_indices] = True
+                select_params = self.select_params(params, atoms_selected_mask)
+                local_model.set_params(select_params)
 
-                # Optimize the local batch using the dedicated function
-                optimized_select_params = self._optimize_local_batch(
-                    local_target, select_params, maxiter, tol, step_size, verbose
-                )
-                clipped_optimized_select_params = self.clip_params(
-                    optimized_select_params
-                )
-                params = self.update_from_local_params(
-                    current_params, clipped_optimized_select_params, atoms_selected
-                )
+                # c) Optimize the local model using a lightweight `train_on_batch` loop.
+                #    This is much faster than `fit()` with callbacks.
+                target_for_training = keras.ops.expand_dims(local_target, 0) if self.backend == "torch" else local_target
+                for _ in range(maxiter):
+                    local_model.train_on_batch(x=model_inputs, y=target_for_training)
+
+                # d) Retrieve optimized parameters and update the main parameter set.
+                optimized_params = local_model.get_params()
+                clipped_params = self.clip_params(optimized_params)
+                params = self.update_from_local_params(params, clipped_params, atoms_selected_mask)
+
                 if plot:
-                    plt.subplots(1, 3, figsize=(15, 5))
-                    plt.subplot(1, 3, 1)
-                    plt.imshow(image, cmap="gray")
-                    # plt.scatter(
-                    #     params["pos_x"], params["pos_y"], color="b", s=1
-                    # )
-                    plt.scatter(
-                        params["pos_x"][index], params["pos_y"][index], color="r", s=1
-                    )
-                    plt.gca().set_aspect("equal", adjustable="box")
-                    plt.subplot(1, 3, 2)
-                    plt.imshow(global_prediction, cmap="gray")
-                    plt.scatter(
-                        select_params["pos_x"], select_params["pos_y"], color="b", s=1
-                    )
-                    plt.gca().set_aspect("equal", adjustable="box")
-                    plt.subplot(1, 3, 3)
-                    plt.imshow(image - global_prediction, cmap="gray")
-                    plt.gca().set_aspect("equal", adjustable="box")
-                    plt.show()
-                    plt.pause(1.0)
-        self.converged = self.convergence(params, pre_params, tol)
-        params = self.linear_estimator(params)
-        self.params = params
-        self.prediction = safe_convert_to_numpy(self.predict(params))
+                    # Plotting logic remains the same
+                    self._plot_progress(params, batch_indices, select_params)
 
-        return params
+            # Check for convergence at the end of an epoch
+            if self.convergence(params, pre_params, tol):
+                print("Convergence criteria met.")
+                self.converged = True
+                break
+        
+        # --- 4. Finalization ---
+        self.params = self.linear_estimator(params)
+        self.prediction = safe_convert_to_numpy(self.predict(self.params))
+        print("Stochastic fitting complete.")
+        return self.params
 
+    def _plot_progress(self, params, index, select_params):
+        """Helper function to keep plotting logic separate."""
+        image = safe_convert_to_numpy(self.image_tensor)
+        global_prediction = safe_convert_to_numpy(self.predict(params))
+        
+        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+        
+        # Original Image with selected atoms
+        axes[0].imshow(image, cmap="gray")
+        axes[0].set_title("Original + Selected Atoms")
+        axes[0].scatter(params["pos_x"][index], params["pos_y"][index], color="r", s=5)
+        axes[0].set_aspect("equal")
+
+        # Full Prediction
+        axes[1].imshow(global_prediction, cmap="gray")
+        axes[1].set_title("Current Full Prediction")
+        axes[1].set_aspect("equal")
+
+        # Residual
+        axes[2].imshow(image - global_prediction, cmap="gray")
+        axes[2].set_title("Residual")
+        axes[2].set_aspect("equal")
+
+        plt.tight_layout()
+        plt.show()
+        
     def fit_voronoi(
         self,
         params: dict = None,  # initial params, optional
@@ -1472,40 +1455,30 @@ class ImageFitting:
         select_params['atom_types'] = params['atom_types'][mask]
         return select_params
 
-    def update_from_local_params(
-        self, params: dict, local_params: dict, mask: np.ndarray, mask_local=None
-    ):
+    def update_from_local_params(self, params: dict, local_params: dict, mask: np.ndarray):
+        """
+        Updates the main parameter set from the locally optimized batch parameters.
+        This version is defensively coded to prevent JAX 'deleted array' errors.
+        """
+        shared_value_list = ["background"]
+        if getattr(self, 'same_width', True):
+            shared_value_list.extend(["width", "ratio"])
+            
         for key, value in local_params.items():
-            # Always convert to tensor (JAX or NumPy) to avoid deleted array refs
-            value = keras.ops.convert_to_tensor(value)
-            shared_value_list = ["background"]
-            if self.same_width:
-                shared_value_list += ["width", "ratio"]
-            if key not in shared_value_list:
-                if keras.backend.backend() == "jax":
-                    if mask_local is None:
-                        # Use .at[mask].set(value) for JAX, but assign the result!
-                        params[key] = params[key].at[mask].set(value)
-                    else:
-                        params[key] = params[key].at[mask].set(value[mask_local])
-                elif keras.backend.backend() == "tensorflow":
-                    if mask_local is None:
-                        params[key] = keras.ops.scatter_update(params[key], mask, value)
-                    else:
-                        params[key] = keras.ops.scatter_update(
-                            params[key], mask, value[mask_local]
-                        )
-                elif keras.backend.backend() == "torch":
-                    if mask_local is None:
-                        params[key] = params[key].scatter(0, keras.ops.where(mask)[0], value)
-                    else:
-                        params[key] = params[key].scatter(
-                            0, keras.ops.where(mask)[0], value[mask_local]
-                        )
-            else:
+            if key in shared_value_list:
                 weight = mask.sum() / self.num_coordinates
-                update = value - params[key]
-                params[key] = params[key] + update * weight
+                params[key] = params[key] * (1 - weight) + value * weight                
+            else:
+                # --- Logic for per-atom parameters ---
+                # This part uses the robust scatter_update function.
+                update_indices = np.where(mask)[0]
+                
+                params[key] = keras.ops.scatter_update(
+                    params[key],
+                    keras.ops.expand_dims(update_indices, axis=-1),
+                    keras.ops.convert_to_tensor(value) # `value_np` contains values for the batch
+                )
+                
         return params
 
     def clip_params(self, params: dict):
@@ -2197,7 +2170,9 @@ class ImageFitting:
 
     @property
     def num_atom_types(self):
-        return len(np.unique(self._atom_types)) if len(self._atom_types) > 0 else 0
+        assert self.atom_types is not None, "Atom types are not set."
+        assert len(self.atom_types) > 0, "Atom types are empty."
+        return len(np.unique(self.atom_types))
 
     @property
     def region_column_labels(self):
