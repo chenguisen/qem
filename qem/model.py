@@ -40,10 +40,7 @@ class ImageModel(keras.Model):
                 continue
             elif hasattr(self, key):
                 current_value = getattr(self, key)
-                if isinstance(current_value, keras.Variable):
-                    current_value.assign(value)
-                else:
-                    pass
+                current_value.assign(value)
             else:
                 raise ValueError(f"Parameter {key} does not exist in the model.")
 
@@ -62,13 +59,18 @@ class ImageModel(keras.Model):
         super().build(input_shape)
         
     def get_params(self):
-        return {
+        dict_params = {
             "pos_x": keras.ops.convert_to_tensor(self.pos_x),
             "pos_y": keras.ops.convert_to_tensor(self.pos_y),
             "height": keras.ops.convert_to_tensor(self.height),
             "width": keras.ops.convert_to_tensor(self.width),
             "background": keras.ops.convert_to_tensor(self.background),
+            "same_width": self.input_params.get('same_width', False),
+            "atom_types": keras.ops.convert_to_tensor(self.input_params['atom_types']) 
         }
+        if hasattr(self, 'ratio'):
+            dict_params['ratio'] = keras.ops.convert_to_tensor(self.ratio)
+        return dict_params
 
     def call(self, inputs):
         """Forward pass of the model."""
@@ -199,7 +201,7 @@ class ImageModel(keras.Model):
                     g_x_flat = keras.ops.cast(keras.ops.reshape(global_x_safe, [-1]), 'int64')
                     indices = g_y_flat * w + g_x_flat
                     
-                    total_flat = keras.ops.flatten(total)
+                    total_flat = keras.ops.reshape(total, (-1,))
                     total = total_flat.scatter_add(0, indices, masked_peaks_flat).reshape(total.shape)
 
             result = total + self.background

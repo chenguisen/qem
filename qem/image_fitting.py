@@ -26,6 +26,7 @@ from qem.gui_classes import (
     InteractivePlot,
 )
 from qem.model import (
+    ImageModel,
     GaussianKernel,
     GaussianModel,
     LorentzianModel,
@@ -107,7 +108,7 @@ class ImageFitting:
         self.prediction = np.zeros_like(self.image)
 
         # Initialize other attributes
-        self.params = {}
+        self.params = None
         self.converged = False
         self.ny, self.nx = image.shape
         self.regions = Regions(image=image)
@@ -135,7 +136,7 @@ class ImageFitting:
             raise ValueError(f"Model type {self.model_type} not supported.")
         return model
 
-    def predict(self, params: dict = None, local: bool = True):
+    def predict(self, params: dict = None, model:ImageModel=None, local: bool = True):
         """Predict the image based on the model's current parameters.
 
         Args:
@@ -145,15 +146,18 @@ class ImageFitting:
         Returns:
             array: Predicted image
         """
+        
         if params is None:
             params = self.params
-        self.model.set_params(params)
+        if model is None:
+            model = self.model
+        model.set_params(params)
         
         # # Ensure model is built
-        if not self.model.built:
-            self.model.build()
+        if not model.built:
+            model.build()
         
-        prediction = self.model.sum(self.x_grid, self.y_grid, local=local)
+        prediction = model.sum(self.x_grid, self.y_grid, local=local)
 
         # Handle periodic boundary conditions by rolling the image
         if self.pbc:
@@ -168,7 +172,7 @@ class ImageFitting:
                 (-1, 1),
             ]:
                 # Temporarily set shifted grids for periodic boundary conditions
-                prediction += self.model.sum(self.x_grid + i * self.nx, self.y_grid + j * self.ny, local=local)
+                prediction += model.sum(self.x_grid + i * self.nx, self.y_grid + j * self.ny, local=local)
         # self.prediction = safe_convert_to_numpy(prediction)
         return prediction
 
@@ -202,6 +206,10 @@ class ImageFitting:
 
         # Create parameters dict for volume calculation
         params = self.params.copy()
+        if self.same_width:
+            params["width"] = params["width"][self.atom_types]
+            if "ratio" in params:
+                params["ratio"] = params["ratio"][self.atom_types]
         volume = self.model.volume(params)
         return safe_convert_to_numpy(volume)
 
@@ -1000,11 +1008,11 @@ class ImageFitting:
                 "The height_scale has values larger than 5, the linear estimator is probably not accurate. I will limit it to 5 but be careful with the results."
             )
             height_scale[height_scale > 5] = 5
-        if (height_scale < 0.1).any():
+        if (height_scale < 0.2).any():
             logging.warning(
-                "The height_scale has values smaller than 0.1, the linear estimator is probably not accurate. I will limit it to 0.1 but be careful with the results."
+                "The height_scale has values smaller than 0.2, the linear estimator is probably not accurate. I will limit it to 0.2 but be careful with the results."
             )
-            height_scale[height_scale < 0.1] = 0.1
+            height_scale[height_scale < 0.2] = 0.2
         params["height"] = keras.ops.convert_to_tensor(height_scale) * keras.ops.convert_to_tensor(
             params["height"]
         )
@@ -1013,6 +1021,7 @@ class ImageFitting:
 
     def optimize(
         self,
+        model: ImageModel,
         image_tensor: np.ndarray,
         params: dict,
         maxiter: int = 1000,
@@ -1023,11 +1032,11 @@ class ImageFitting:
     ) -> dict[str, NDArray[Any]]:
         if image_tensor is None:
             image_tensor = self.image_tensor
-        self.model.set_params(params)
+        model.set_params(params)
 
         # Build the model with the correct input shape (grid shapes)
-        if not self.model.built:
-            self.model.build()
+        if not model.built:
+            model.build()
 
         # Backend-specific input preparation
         if self.backend == "torch":
@@ -1042,7 +1051,7 @@ class ImageFitting:
             # image_tensor = keras.ops.expand_dims(image_tensor, 0)
             model_inputs = [self.x_grid, self.y_grid]
         
-        self.model.compile(
+        model.compile(
             optimizer=keras.optimizers.Adam(learning_rate=step_size), loss=self.loss
         )
 
@@ -1054,7 +1063,7 @@ class ImageFitting:
             restore_best_weights=True,
         )
 
-        self.model.fit(
+        model.fit(
             x=model_inputs,
             y=image_tensor,
             epochs=maxiter,
@@ -1062,7 +1071,7 @@ class ImageFitting:
             callbacks=[early_stopping],
             batch_size=batch_size,  # Set to 1 since we have only one sample (the full image)
         )
-        optimized_params = self.model.get_params()
+        optimized_params = model.get_params()
         return optimized_params
 
     def fit_global(
@@ -1075,8 +1084,11 @@ class ImageFitting:
         verbose: bool = False,
     ):
         if params is None:
+            # if self.params not empty
+            
             params = self.params if self.params is not None else self.init_params()
         params = self.optimize(
+            model = self.model,
             image_tensor=self.image_tensor,
             params=params,
             maxiter=maxiter,
@@ -1110,6 +1122,7 @@ class ImageFitting:
         # --- 1. Initialization ---
         if params is None:
             params = self.params if self.params is not None else self.init_params()
+        params = {k: keras.ops.stop_gradient(v) for k, v in params.items()}
 
         # Create and compile a single, reusable model for optimizing local batches.
         # This is the key performance improvement, as compilation happens only ONCE.
@@ -1129,8 +1142,7 @@ class ImageFitting:
         self.converged = False
         for epoch in range(num_epoch):
             print(f"Epoch {epoch + 1}/{num_epoch}")
-            params = self.linear_estimator(params)
-            params = {k: np.array(v) for k, v in params.items()}
+            params = self.linear_estimator(params)  
             pre_params = safe_deepcopy_params(params)
             
             random_batches = get_random_indices_in_batches(self.num_coordinates, batch_size)
@@ -1158,8 +1170,12 @@ class ImageFitting:
                     update_indices,
                     update_values
                     )
-                prediction_from_others = self.predict(params_without_batch, local=local) - params_without_batch['background']
-                local_target = self.image_tensor - prediction_from_others
+                params_without_batch['background'] = keras.ops.zeros_like(params_without_batch['background'])
+                model_others = self._create_model()
+                model_others.set_params(params_without_batch)
+                prediction_from_others = self.predict(params_without_batch, model=model_others, local=local)
+                local_target = keras.ops.stop_gradient(self.image_tensor - prediction_from_others)
+
                 
                 # b) Isolate the parameters for the current batch and set them in the local model.
                 atoms_selected_mask = np.zeros(self.num_coordinates, dtype=bool)
@@ -1169,15 +1185,14 @@ class ImageFitting:
 
                 # c) Optimize the local model using a lightweight `train_on_batch` loop.
                 #    This is much faster than `fit()` with callbacks.
-                target_for_training = keras.ops.expand_dims(local_target, 0) if self.backend == "torch" else local_target
+                # target_for_training = keras.ops.expand_dims(local_target, 0) if self.backend == "torch" else local_target
                 for _ in range(maxiter):
-                    local_model.train_on_batch(x=model_inputs, y=target_for_training)
+                    local_model.train_on_batch(x=model_inputs, y=local_target)
 
                 # d) Retrieve optimized parameters and update the main parameter set.
                 optimized_params = local_model.get_params()
                 clipped_params = self.clip_params(optimized_params)
                 params = self.update_from_local_params(params, clipped_params, atoms_selected_mask)
-
                 if plot:
                     # Plotting logic remains the same
                     self._plot_progress(params, batch_indices, select_params)
@@ -1196,13 +1211,12 @@ class ImageFitting:
 
     def _plot_progress(self, params, index, select_params):
         """Helper function to keep plotting logic separate."""
-        image = safe_convert_to_numpy(self.image_tensor)
         global_prediction = safe_convert_to_numpy(self.predict(params))
         
         fig, axes = plt.subplots(1, 3, figsize=(15, 5))
         
         # Original Image with selected atoms
-        axes[0].imshow(image, cmap="gray")
+        axes[0].imshow(self.image, cmap="gray")
         axes[0].set_title("Original + Selected Atoms")
         axes[0].scatter(params["pos_x"][index], params["pos_y"][index], color="r", s=5)
         axes[0].set_aspect("equal")
@@ -1213,7 +1227,7 @@ class ImageFitting:
         axes[1].set_aspect("equal")
 
         # Residual
-        axes[2].imshow(image - global_prediction, cmap="gray")
+        axes[2].imshow(self.image - global_prediction, cmap="gray")
         axes[2].set_title("Residual")
         axes[2].set_aspect("equal")
 
@@ -1409,6 +1423,7 @@ class ImageFitting:
         Returns:
             bool: True if all parameters have converged within the tolerance, False otherwise.
         """
+        logging.info(f"Checking convergence with tolerance {tol}")
         # Loop through current parameters and their previous values
         for key, value in params.items():
             if key not in pre_params:
@@ -1464,8 +1479,11 @@ class ImageFitting:
         if getattr(self, 'same_width', True):
             shared_value_list.extend(["width", "ratio"])
             
+        const_value_list =['same_width', 'atom_types']
         for key, value in local_params.items():
-            if key in shared_value_list:
+            if key in const_value_list:
+                pass
+            elif key in shared_value_list:
                 weight = mask.sum() / self.num_coordinates
                 params[key] = params[key] * (1 - weight) + value * weight                
             else:
