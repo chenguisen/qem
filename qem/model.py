@@ -1,6 +1,4 @@
-import os
-from abc import ABC, abstractmethod
-from functools import partial
+from abc import abstractmethod
 
 import numpy as np
 from dotenv import load_dotenv
@@ -8,7 +6,9 @@ from numba import jit as njit
 
 load_dotenv()
 import keras
-from keras import ops
+
+from qem.utils import safe_convert_to_numpy, safe_convert_to_tensor
+
 class ImageModel(keras.Model):
     """Base class for all image models."""
 
@@ -21,12 +21,6 @@ class ImageModel(keras.Model):
         super().__init__()
         self.dx = dx
         self.input_params = None
-        self.x_grid= None
-        self.y_grid = None
-        
-    def set_grid(self, x_grid, y_grid):
-        self.x_grid = x_grid
-        self.y_grid = y_grid
             
     def set_params(self, params):
         # Set params as tensors, but do not build variables yet
@@ -37,17 +31,20 @@ class ImageModel(keras.Model):
 
     def update_params(self, params):
         """Update the model parameters (values only, not shapes)."""
+        # Configuration parameters that are not model weights
+        config_params = {'same_width', 'atom_types'}
+        
         for key, value in params.items():
-            if hasattr(self, key):
+            if key in config_params:
+                # Skip configuration parameters - they're handled in input_params
+                continue
+            elif hasattr(self, key):
                 current_value = getattr(self, key)
-                if isinstance(current_value, keras.Variable):
-                    current_value.assign(value)
-                else:
-                    setattr(self, key, value)
+                current_value.assign(value)
             else:
                 raise ValueError(f"Parameter {key} does not exist in the model.")
 
-    def build(self):
+    def build(self, input_shape=(1,)):
         if self.input_params is None:
             raise ValueError("initial_params must be set before building the model.")
         # If already built and shapes match, do nothing
@@ -59,30 +56,26 @@ class ImageModel(keras.Model):
         self.height = self.add_weight(shape=(self.input_params['height'].shape[0],), initializer=keras.initializers.Constant(self.input_params['height']), name="height")
         self.width = self.add_weight(shape=(self.input_params['width'].shape[0],), initializer=keras.initializers.Constant(self.input_params['width']), name="width")
         self.background = self.add_weight(shape=(), initializer=keras.initializers.Constant(self.input_params['background']), name="background")
-        super().build(self.input_params['pos_x'].shape[0])
+        super().build(input_shape)
         
     def get_params(self):
-        return {
+        dict_params = {
             "pos_x": keras.ops.convert_to_tensor(self.pos_x),
             "pos_y": keras.ops.convert_to_tensor(self.pos_y),
             "height": keras.ops.convert_to_tensor(self.height),
             "width": keras.ops.convert_to_tensor(self.width),
             "background": keras.ops.convert_to_tensor(self.background),
+            "same_width": self.input_params.get('same_width', False),
+            "atom_types": keras.ops.convert_to_tensor(self.input_params['atom_types']) 
         }
+        if hasattr(self, 'ratio'):
+            dict_params['ratio'] = keras.ops.convert_to_tensor(self.ratio)
+        return dict_params
 
-    def call(self, inputs=None):
+    def call(self, inputs):
         """Forward pass of the model."""
-        # The inputs parameter is ignored - we use the grids set by set_grid
-        # This is because Keras passes batched inputs, but we want to use the original grids
-        if self.x_grid is None or self.y_grid is None:
-            raise ValueError("Model grids not set. Call set_grid() before using the model.")
-        
-        # For JAX backend, ensure the model is properly built
-        if not self.built and hasattr(self, 'input_params') and self.input_params is not None:
-            # Force building if not already built
-            self.build()
-            
-        return self.sum(local=True)
+        x_grid, y_grid = inputs
+        return self.sum(x_grid, y_grid)
 
     @abstractmethod
     def model_fn(self, x, y, pos_x, pos_y, height, width, *args):
@@ -95,106 +88,131 @@ class ImageModel(keras.Model):
         """Calculate the volume of each peak."""
         pass
 
-    def _sum(self,  local=True):
-        """Calculate all peaks either globally or locally.
-        
+    # The revised method starts here.
+    def sum(self, x_grid: np.ndarray, y_grid: np.ndarray, local: bool = True):
+        """Calculates the sum of all peaks on a grid, with an optional background.
+
+        This method supports both a global calculation and a memory-efficient local
+        calculation suitable for JIT compilation.
+
         Args:
-            local (bool, optional): If True, calculate peaks locally within a fixed window. Defaults to False.
-            
+            x_grid (array): A 2D array of X coordinates (from meshgrid).
+            y_grid (array): A 2D array of Y coordinates (from meshgrid).
+            local (bool, optional): If True, calculates peaks in local windows to
+                conserve memory. This approach is JIT-compatible. Defaults to True.
+
         Returns:
-            array: Sum of all peaks plus background
+            array: A 2D array representing the rendered image of peaks plus background.
         """
-        kargs = []
-        if hasattr(self, 'ratio'):
-            kargs.append(self.ratio)
+        # Squeeze batch dimension for processing, if it exists.
+        has_batch_dim = len(x_grid.shape) > 2
+        if has_batch_dim:
+            x_grid = keras.ops.squeeze(x_grid, axis=0)
+            y_grid = keras.ops.squeeze(y_grid, axis=0)
+
+        # Prepare arguments for the peak model function.
+        # This is refactored to avoid code duplication.
+        width = self.width
+        ratio = self.ratio if hasattr(self, 'ratio') else None
+        if self.input_params.get('same_width', False):
+            atom_types = keras.ops.cast(
+                safe_convert_to_tensor(self.input_params['atom_types']), dtype='int32'
+            )
+            width = keras.ops.take(self.width, atom_types)
+            if ratio is not None:
+                ratio = keras.ops.take(self.ratio, atom_types)
+        
+        width_ratio_args = (width, ratio) if ratio is not None else (width,)
 
         if not local:
-            # Calculate all peaks at once and sum them
+            # Global calculation: simpler but uses more memory.
             peaks = self.model_fn(
-                self.x_grid[:, :, None], self.y_grid[:, :, None],
-                self.pos_x[None, None, :], self.pos_y[None, None, :],
-                self.height, self.width, *kargs
+                x_grid[..., None], y_grid[..., None],  # Broadcasting to match peak dimensions
+                self.pos_x, self.pos_y,
+                self.height, *width_ratio_args
             )
-            return keras.ops.sum(peaks, axis=-1) + self.background
+            result = keras.ops.sum(peaks, axis=-1) + self.background
         else:
-            # Local calculation with parallel processing
-            width_max = keras.ops.max(self.width) 
-            window_size = keras.ops.cast(keras.ops.ceil(width_max * 4), dtype="int32")
-
-            # Create a local coordinate grid for the window
-            window_x = keras.ops.arange(-window_size, window_size + 1, dtype=self.x_grid.dtype)
-            window_y = keras.ops.arange(-window_size, window_size + 1, dtype=self.y_grid.dtype)
-            local_x_grid, local_y_grid = keras.ops.meshgrid(window_x, window_y)
-
-            # Calculate local peaks relative to their centers (0,0)
-            # The positions are implicitly handled by where we add the peaks back.
-            input_params = (keras.ops.mod(self.pos_x, 1), keras.ops.mod(self.pos_y, 1), self.height, self.width)
-            if hasattr(self, 'ratio'):
-                input_params += (self.ratio,)
+            # --- JIT-Compatible Local Calculation ---
             
-            peak_local = self.model_fn(local_x_grid[..., None], local_y_grid[..., None], *input_params)
+            # 1. Define a static window size. For JIT compilation, this value
+            # cannot be a traced tensor; it must be a concrete Python integer.
+            # We assume the width parameter used for this is a static NumPy array.
+            max_width = np.max(safe_convert_to_numpy(self.input_params['width']))
+            window_size = int(max_width * 4)
 
-            # Calculate integer base coordinates for each peak
+            # 2. Create a local coordinate grid for the window.
+            window_coords = keras.ops.arange(-window_size, window_size + 1, dtype=x_grid.dtype)
+            local_x_grid, local_y_grid = keras.ops.meshgrid(window_coords, window_coords)
+
+            # 3. Calculate all local peak shapes centered at (0,0).
+            peak_params = (
+                keras.ops.mod(self.pos_x, 1), keras.ops.mod(self.pos_y, 1),
+                self.height, *width_ratio_args
+            )
+            local_peaks = self.model_fn(local_x_grid[..., None], local_y_grid[..., None], *peak_params)
+
+            # 4. Calculate the global coordinates where each local peak point should go.
             pos_x_int = keras.ops.floor(self.pos_x)
             pos_y_int = keras.ops.floor(self.pos_y)
-
-            # Calculate the global coordinates for each point in each local peak window
             global_x = keras.ops.expand_dims(local_x_grid, -1) + pos_x_int
             global_y = keras.ops.expand_dims(local_y_grid, -1) + pos_y_int
 
-            # Create a mask for coordinates that are within the image boundaries
-            mask = (global_x >= 0) & (global_x < self.x_grid.shape[1]) & (global_y >= 0) & (global_y < self.y_grid.shape[0])
+            # 5. Create a mask to identify points that fall within the image boundaries.
+            mask = (global_x >= 0) & (global_x < x_grid.shape[1]) & (global_y >= 0) & (global_y < y_grid.shape[0])
 
-            # Get the indices of valid elements where the mask is True.
-            valid_indices = keras.ops.where(mask)
-            
-            # Flatten the mask to get 1D indices of valid elements.
-            flat_indices = keras.ops.where(keras.ops.reshape(mask, (-1,)))[0]
+            # 6. Apply the mask to zero out contributions from out-of-bounds points.
+            # This is the key to JIT compatibility, as it preserves the static shape of the array.
+            masked_peaks = keras.ops.where(mask, local_peaks, 0.0)
 
-            # Gather the valid data from the flattened tensors using the 1D indices.
-            valid_values = keras.ops.take(keras.ops.reshape(peak_local, (-1,)), flat_indices)
-            global_x_valid = keras.ops.take(keras.ops.reshape(global_x, (-1,)), flat_indices)
-            global_y_valid = keras.ops.take(keras.ops.reshape(global_y, (-1,)), flat_indices)
+            # 7. Clip coordinates to prevent scatter operations from failing on out-of-bounds indices.
+            # The values for these points are already zeroed out by the mask.
+            h, w = x_grid.shape
+            global_x_safe = keras.ops.clip(global_x, 0, w - 1)
+            global_y_safe = keras.ops.clip(global_y, 0, h - 1)
 
-            # Create the final image tensor
-            total = keras.ops.zeros_like(self.x_grid, dtype=self.x_grid.dtype)
-            
-            # Use the backend to scatter the local peaks onto the global image
+            # 8. Scatter the masked peaks onto the final canvas using backend-specific operations.
+            total = keras.ops.zeros_like(x_grid, dtype='float32')
             backend = keras.backend.backend()
-            if backend == 'torch':
-                import torch
-                # Calculate flat indices for scatter_add
-                indices = (keras.ops.cast(global_y_valid, dtype='int64') * total.shape[1] + keras.ops.cast(global_x_valid, dtype='int64'))
+
+            if backend == 'jax':
+                # JAX's `at[...].add` is the idiomatic way to perform indexed updates.
+                indices = (
+                    keras.ops.cast(global_y_safe, 'int32'),
+                    keras.ops.cast(global_x_safe, 'int32')
+                )
+                total = total.at[indices].add(masked_peaks)
+            else: # TensorFlow and PyTorch logic
+                # Flatten arrays for scatter operations in TF and Torch.
+                masked_peaks_flat = keras.ops.reshape(masked_peaks, [-1])
                 
-                total_flat = total.flatten()
-                # Use a non-in-place operation to help PyTorch's autograd manage memory
-                total_flat = total_flat.scatter_add(0, indices, valid_values)
-                total = total_flat.reshape(total.shape)
-            elif backend == 'jax':
-                import jax.numpy as jnp
-                # JAX uses a different approach for indexed updates
-                indices = (keras.ops.cast(global_y_valid, 'int32'), keras.ops.cast(global_x_valid, 'int32'))
-                total = total.at[indices].add(valid_values)
-            else: # tensorflow
-                import tensorflow as tf
-                # TensorFlow uses tensor_scatter_nd_add
-                indices = keras.ops.stack([keras.ops.cast(global_y_valid, dtype='int32'), keras.ops.cast(global_x_valid, dtype='int32')], axis=-1)
-                total = tf.tensor_scatter_nd_add(total, indices, valid_values)
+                if backend == 'tensorflow':
+                    import tensorflow as tf
+                    # TF requires stacking the indices into a (N, 2) tensor.
+                    indices = keras.ops.stack([
+                        keras.ops.cast(keras.ops.reshape(global_y_safe, [-1]), 'int32'),
+                        keras.ops.cast(keras.ops.reshape(global_x_safe, [-1]), 'int32')
+                    ], axis=-1)
+                    total = tf.tensor_scatter_nd_add(total, indices, masked_peaks_flat)
+                
+                else: # 'torch'
+                    # PyTorch requires flat 1D indices.
+                    g_y_flat = keras.ops.cast(keras.ops.reshape(global_y_safe, [-1]), 'int64')
+                    g_x_flat = keras.ops.cast(keras.ops.reshape(global_x_safe, [-1]), 'int64')
+                    indices = g_y_flat * w + g_x_flat
+                    
+                    total_flat = keras.ops.reshape(total, (-1,))
+                    total = total_flat.scatter_add(0, indices, masked_peaks_flat).reshape(total.shape)
 
-            return total + self.background
+            result = total + self.background
 
-    def sum(self, local=True):
-        """Calculate sum of peaks using Keras.
-        
-        Args:
-            x_grid (array): x_grid coordinates mesh
-            y_grid (array): y_grid coordinates mesh
-            local (bool, optional): If True, calculate peaks locally within a fixed window. Defaults to False.
-            
-        Returns:
-            array: Sum of all peaks plus background
-        """
-        return self._sum(local=local)
+        # Add batch dimension back if it was originally present.
+        if has_batch_dim:
+            result = keras.ops.expand_dims(result, axis=0)
+
+        return result
+
+
 
 class GaussianModel(ImageModel):
     """Gaussian peak model."""
@@ -248,7 +266,7 @@ class VoigtModel(ImageModel):
         super().set_params(params)
         # The ratio parameter will be handled by the base class update_params method
 
-    def build(self):
+    def build(self, input_shape=None):
         if self.input_params is None:
             raise ValueError("initial_params must be set before building the model.")
         # If already built and shapes match, do nothing
@@ -270,7 +288,7 @@ class VoigtModel(ImageModel):
             name="ratio"
         )
         # Call parent build method
-        super().build()
+        super().build(input_shape)
 
 
     def get_params(self):

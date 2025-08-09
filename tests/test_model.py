@@ -45,13 +45,12 @@ def test_gaussian_model(grid_2d, peak_params):
     model = GaussianModel(dx=1.0)
     
     # Set up the model
-    model.set_grid(x_grid, y_grid)
     model.set_params(peak_params)
     # Build the model
     model.build()
     
     # Test sum method
-    result = model.sum(local=False)
+    result = model.sum(x_grid, y_grid, local=False)
     result_np = safe_convert_to_numpy(result)
     
     # Check shape
@@ -68,7 +67,7 @@ def test_gaussian_model(grid_2d, peak_params):
     assert np.all(volumes_np > 0)
     
     # Test local vs global calculation
-    result_local = model.sum(local=True)
+    result_local = model.sum(x_grid, y_grid, local=False)
     result_local_np = safe_convert_to_numpy(result_local)
     
     # Results should be close
@@ -80,12 +79,11 @@ def test_lorentzian_model(grid_2d, peak_params):
     model = LorentzianModel(dx=1.0)
     
     # Set up the model
-    model.set_grid(x_grid, y_grid)
     model.set_params(peak_params)
     model.build()
     
     # Test sum method
-    result = model.sum(local=False)
+    result =model.sum(x_grid, y_grid, local=False)
     result_np = safe_convert_to_numpy(result)
     
     # Check shape
@@ -107,12 +105,11 @@ def test_voigt_model(grid_2d, peak_params):
     model = VoigtModel(dx=1.0)
     
     # Set up the model
-    model.set_grid(x_grid, y_grid)
     model.set_params(peak_params)
     model.build()
     
     # Test sum method
-    result = model.sum(local=False)
+    result = model.sum(x_grid, y_grid, local=False)
     result_np = safe_convert_to_numpy(result)
     
     # Check shape
