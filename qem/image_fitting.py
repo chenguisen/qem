@@ -385,7 +385,7 @@ class ImageFitting:
 
         if isinstance(self.model, VoigtModel):
             if self.same_width:
-                ratio = 0.9  # Scalar for same_width case
+                ratio = np.tile(0.9, self.num_atom_types).astype(float)
             else:
                 ratio = np.tile(0.9, self.num_coordinates).astype(float)
             params["ratio"] = ratio

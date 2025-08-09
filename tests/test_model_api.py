@@ -27,12 +27,11 @@ try:
     
     # Test model
     model = GaussianModel(dx=1.0)
-    model.set_grid(x_grid, y_grid)
     model.set_params(params)
     model.build()
     
     # Test sum method
-    result = model.sum(local=False)
+    result = model.sum(x_grid, y_grid, local=False)
     result_np = safe_convert_to_numpy(result)
     
     print(f"Model output shape: {result_np.shape}")

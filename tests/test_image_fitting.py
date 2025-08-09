@@ -60,11 +60,10 @@ def test_global_fitting(model_type, model_class):
 
     # Generate synthetic image
     model = model_class(dx=1.0)
-    model.set_grid(x_grid, y_grid)
     model.set_params(true_params)
     model.build()
 
-    synthetic_image = model.sum(local=False)
+    synthetic_image = model.sum(x_grid, y_grid, local=False)
     synthetic_image_np = safe_convert_to_numpy(synthetic_image)
 
     # Add some noise
@@ -146,11 +145,10 @@ def test_stochastic_fitting():
     }
 
     model = GaussianModel(dx=1.0)
-    model.set_grid(x_grid, y_grid)
     model.set_params(true_params)
     model.build()
 
-    synthetic_image = model.sum(local=False)
+    synthetic_image = model.sum(x_grid, y_grid, local=False)
     synthetic_image_np = safe_convert_to_numpy(synthetic_image)
 
     # Initialize ImageFitting
@@ -210,11 +208,10 @@ def synthetic_test_data():
     }
     
     model = GaussianModel(dx=dx)
-    model.set_grid(x_grid, y_grid)
     model.set_params(true_params)
     model.build()
     
-    synthetic_image = model.sum(local=False)
+    synthetic_image = model.sum(x_grid, y_grid, local=False)
     synthetic_image_np = safe_convert_to_numpy(synthetic_image)
     
     # Add some noise
@@ -416,11 +413,10 @@ def test_voronoi_properties():
     }
 
     model = GaussianModel(dx=1.0)
-    model.set_grid(x_grid, y_grid)
     model.set_params(true_params)
     model.build()
 
-    synthetic_image = model.sum(local=False)
+    synthetic_image = model.sum(x_grid, y_grid, local=False)
     synthetic_image_np = safe_convert_to_numpy(synthetic_image)
 
     # Add some noise
@@ -541,11 +537,10 @@ def test_center_of_mass_refinement():
     }
 
     model = GaussianModel(dx=1.0)
-    model.set_grid(x_grid, y_grid)
     model.set_params(true_params)
     model.build()
 
-    synthetic_image = model.sum(local=False)
+    synthetic_image = model.sum(x_grid, y_grid, local=False)
     synthetic_image_np = safe_convert_to_numpy(synthetic_image)
 
     # Initialize ImageFitting with slightly offset initial coordinates
