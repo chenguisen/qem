@@ -187,6 +187,27 @@ class ImageFitting:
             raise ValueError(f"Model type {self.model_type} not supported.")
         return model
 
+    def _create_fitting_model(self, params: dict):
+        """
+        Create a model instance for fitting with appropriate parameter trainability.
+        
+        Args:
+            params: Parameters dictionary.
+            
+        Returns:
+            ImageModel: Model with background trainability based on fit_background setting.
+        """
+        model = self._create_model()
+        model.set_params(params)
+        if not model.built:
+            model.build()
+        
+        # Handle background trainability based on fit_background setting
+        if not self.fit_background and hasattr(model, 'background'):
+            model.background.trainable = False
+            
+        return model
+
     def predict(self, params: dict = None, model:ImageModel=None, local: bool = True):
         """Predict the image based on the model's current parameters.
 
@@ -1139,7 +1160,7 @@ class ImageFitting:
 
         # Create and compile a single, reusable model for optimizing local batches.
         # This is the key performance improvement, as compilation happens only ONCE.
-        local_model_template = self._create_model()
+        local_model_template = self._create_fitting_model(params)
         local_model_template.compile(
             optimizer=keras.optimizers.Adam(learning_rate=step_size),
             loss=self.loss,
@@ -1170,53 +1191,52 @@ class ImageFitting:
 
                 for batch_indices in tqdm(random_batches, desc="Fitting random batch", leave=False):
                     # --- 3. Per-Batch Optimization ---
+                    
+                    # a) Calculate the target for the local model. The target is the original image
+                    #    minus the contribution from all *other* (non-batch) atoms.
+                    params_without_batch = safe_deepcopy_params(params)
+                    height_tensor = params_without_batch['height']
+                    update_indices = keras.ops.expand_dims(batch_indices, axis=-1)
+                    update_values = keras.ops.zeros(keras.ops.shape(batch_indices))
+                    params_without_batch['height'] = keras.ops.scatter_update(
+                        height_tensor,
+                        update_indices,
+                        update_values
+                    )
+                    params_without_batch['background'] = keras.ops.zeros_like(params_without_batch['background'])
+                    
+                    model_others = self._create_fitting_model(params_without_batch)
+                    model_others.set_params(params_without_batch)
+                    prediction_from_others = self.predict(params_without_batch, model=model_others, local=local)
+                    local_target = keras.ops.stop_gradient(self.image_tensor - prediction_from_others)
+
+                    # b) Isolate the parameters for the current batch
+                    atoms_selected_mask = np.zeros(self.num_coordinates, dtype=bool)
+                    atoms_selected_mask[batch_indices] = True
+                    select_params = self.select_params(params, atoms_selected_mask)
+                    
+                    # c) Create or reuse local model
                     if len(batch_indices) < batch_size:
-                        local_model = self._create_model()
+                        local_model = self._create_fitting_model(select_params)
                         local_model.compile(
                             optimizer=keras.optimizers.Adam(learning_rate=step_size),
                             loss=self.loss,
                         )
-                else:
-                    local_model = local_model_template
+                    else:
+                        # For full batch, create new model with correct parameter shapes
+                        local_model = local_model_template
+                        local_model.set_params(select_params)
 
-                # a) Calculate the target for the local model. The target is the original image
-                #    minus the contribution from all *other* (non-batch) atoms.
-                params_without_batch = safe_deepcopy_params(params)
-                # By zeroing out the height, we effectively remove the batch atoms' contribution.
-                height_tensor = params_without_batch['height']
-                update_indices = keras.ops.expand_dims(batch_indices, axis=-1)
-                update_values = keras.ops.zeros(keras.ops.shape(batch_indices))
-                params_without_batch['height'] = keras.ops.scatter_update(
-                    height_tensor,
-                    update_indices,
-                    update_values
-                    )
-                params_without_batch['background'] = keras.ops.zeros_like(params_without_batch['background'])
-                model_others = self._create_model()
-                model_others.set_params(params_without_batch)
-                prediction_from_others = self.predict(params_without_batch, model=model_others, local=local)
-                local_target = keras.ops.stop_gradient(self.image_tensor - prediction_from_others)
+                    # d) Optimize the local model using train_on_batch
+                    for _ in range(maxiter):
+                        local_model.train_on_batch(x=model_inputs, y=local_target)
 
-                
-                # b) Isolate the parameters for the current batch and set them in the local model.
-                atoms_selected_mask = np.zeros(self.num_coordinates, dtype=bool)
-                atoms_selected_mask[batch_indices] = True
-                select_params = self.select_params(params, atoms_selected_mask)
-                local_model.set_params(select_params)
-
-                # c) Optimize the local model using a lightweight `train_on_batch` loop.
-                #    This is much faster than `fit()` with callbacks.
-                # target_for_training = keras.ops.expand_dims(local_target, 0) if self.backend == "torch" else local_target
-                for _ in range(maxiter):
-                    local_model.train_on_batch(x=model_inputs, y=local_target)
-
-                # d) Retrieve optimized parameters and update the main parameter set.
-                optimized_params = local_model.get_params()
-                clipped_params = self.clip_params(optimized_params)
-                params = self.update_from_local_params(params, clipped_params, atoms_selected_mask)
-                if plot:
-                    # Plotting logic remains the same
-                    self._plot_progress(params, batch_indices, select_params)
+                    # e) Retrieve optimized parameters and update the main parameter set
+                    optimized_params = local_model.get_params()
+                    clipped_params = self.clip_params(optimized_params)
+                    params = self.update_from_local_params(params, clipped_params, atoms_selected_mask)
+                    if plot:
+                        self._plot_progress(params, batch_indices, select_params)
 
                 # Check for convergence at the end of an epoch
                 if self.convergence(params, pre_params, tol):
