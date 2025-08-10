@@ -1264,8 +1264,7 @@ class ImageFitting:
         return diff
 
     # fitting
-    def linear_estimator(self, params: dict = None, non_negative: bool = False, 
-                        regularization: float = 1e-6) -> dict:
+    def linear_estimator(self, params: dict = None, non_negative: bool = False) -> dict:
         """
         Perform linear estimation of peak heights using least squares fitting.
         
@@ -1276,7 +1275,6 @@ class ImageFitting:
         Args:
             params: Model parameters dictionary. If None, uses self.params
             non_negative: Whether to enforce non-negative height constraints
-            regularization: Regularization parameter for numerical stability
             
         Returns:
             Updated parameters dictionary with refined height values
@@ -1422,7 +1420,7 @@ class ImageFitting:
         
         with operation_context:
             model.compile(
-                optimizer=keras.optimizers.Adam(learning_rate=step_size), loss=self.loss
+                optimizer=keras.optimizers.AdamW(learning_rate=step_size), loss=self.loss
             )
 
             early_stopping = keras.callbacks.EarlyStopping(
@@ -1581,8 +1579,6 @@ class ImageFitting:
         verbose: bool = False,
         local: bool = True,
         plot: bool = False,
-        memory_limit_gb: float = 8.0,
-        auto_batch_size: bool = True,
     ):
         """
         Fits model parameters stochastically by optimizing random batches of coordinates.
@@ -1599,7 +1595,7 @@ class ImageFitting:
         # This is the key performance improvement, as compilation happens only ONCE.
         local_model_template = self._create_fitting_model(params)
         local_model_template.compile(
-            optimizer=keras.optimizers.Adam(learning_rate=step_size),
+            optimizer=keras.optimizers.AdamW(learning_rate=step_size),
             loss=self.loss,
         )
 
@@ -1908,7 +1904,7 @@ class ImageFitting:
         Returns:
             bool: True if all parameters have converged within the tolerance, False otherwise.
         """
-        logging.info(f"Checking convergence with tolerance {tol}")
+        # logging.info(f"Checking convergence with tolerance {tol}")
         # Loop through current parameters and their previous values
         for key, value in params.items():
             if key not in pre_params:
