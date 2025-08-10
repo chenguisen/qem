@@ -81,7 +81,7 @@ class ImageFitting:
             elements = ["A", "B", "C"]
 
         # Store instance variables
-        self.image = image
+        self.image = gaussian_filter(image, 1)
         self.dx = float(dx)
         self.units = units
         self.elements = elements
@@ -401,7 +401,345 @@ class ImageFitting:
             self.model.build()
         return params
 
-    # find atomic columns
+    def estimate_initial_peaks_for_complex_domains(
+        self,
+        domain_separation_method: str = "intensity_gradient",
+        interface_width: float = 2.0,  # in Angstroms
+        bulk_detection_sensitivity: float = 0.3,
+        interface_detection_sensitivity: float = 0.1,
+        antiphase_detection: bool = True,
+        min_bulk_region_size: int = 50,
+        plot_analysis: bool = True,
+        sigma_bulk: float = 3.0,
+        sigma_interface: float = 1.5,
+    ):
+        """
+        Estimate initial peak positions for complex STO domains with antiphase boundaries
+        and fixed interfaces by separating bulk phase regions from interface regions.
+        
+        This method implements a sophisticated approach that:
+        1. Analyzes intensity gradients to identify domain boundaries
+        2. Separates bulk regions from interface/boundary regions
+        3. Uses different peak detection strategies for each region type
+        4. Handles antiphase boundaries with specialized detection
+        
+        Args:
+            domain_separation_method: Method to separate domains ('intensity_gradient', 'laplacian', 'sobel')
+            interface_width: Expected width of interface regions in Angstroms
+            bulk_detection_sensitivity: Threshold for peak detection in bulk regions
+            interface_detection_sensitivity: Threshold for peak detection in interface regions
+            antiphase_detection: Whether to use specialized antiphase boundary detection
+            min_bulk_region_size: Minimum size for a region to be considered bulk
+            plot_analysis: Whether to plot the analysis results
+            sigma_bulk: Gaussian filter sigma for bulk region processing
+            sigma_interface: Gaussian filter sigma for interface region processing
+            
+        Returns:
+            dict: Dictionary containing separated peak coordinates and region classifications
+        """
+        
+        # Convert interface width from Angstroms to pixels
+        interface_width_px = max(1, int(interface_width / self.dx))
+        
+        # Step 1: Identify domain boundaries using intensity gradients
+        bulk_mask, interface_mask, boundary_strength = self._identify_domain_boundaries(
+            method=domain_separation_method,
+            interface_width_px=interface_width_px,
+            min_bulk_size=min_bulk_region_size
+        )
+        
+        # Step 2: Detect peaks in bulk regions with standard sensitivity
+        bulk_peaks = self._detect_peaks_in_bulk_regions(
+            bulk_mask=bulk_mask,
+            threshold_rel=bulk_detection_sensitivity,
+            sigma=sigma_bulk,
+            min_distance=max(5, int(3.905 / self.dx))  # STO lattice parameter
+        )
+        
+        # Step 3: Detect peaks in interface regions with higher sensitivity
+        interface_peaks = self._detect_peaks_in_interface_regions(
+            interface_mask=interface_mask,
+            threshold_rel=interface_detection_sensitivity,
+            sigma=sigma_interface,
+            min_distance=max(3, int(2.0 / self.dx)),  # Smaller distance for interfaces
+            antiphase_detection=antiphase_detection,
+            boundary_strength=boundary_strength
+        )
+        
+        # Step 4: Classify and combine peaks
+        all_peaks, peak_classifications = self._combine_and_classify_peaks(
+            bulk_peaks, interface_peaks, bulk_mask, interface_mask
+        )
+        
+        # Update coordinates and atom types
+        if len(all_peaks) > 0:
+            self.coordinates = all_peaks
+            # Initialize atom types based on region classification
+            self.atom_types = np.zeros(len(all_peaks), dtype=int)
+            # Assign different atom types for bulk vs interface peaks if needed
+            interface_indices = peak_classifications == 'interface'
+            self.atom_types[interface_indices] = 1  # Different type for interface atoms
+        
+        # Step 5: Plot analysis if requested
+        if plot_analysis:
+            self._plot_domain_analysis(
+                bulk_mask, interface_mask, boundary_strength,
+                bulk_peaks, interface_peaks, peak_classifications
+            )
+        
+        results = {
+            'all_peaks': all_peaks,
+            'bulk_peaks': bulk_peaks,
+            'interface_peaks': interface_peaks,
+            'peak_classifications': peak_classifications,
+            'bulk_mask': bulk_mask,
+            'interface_mask': interface_mask,
+            'boundary_strength': boundary_strength
+        }
+        
+        logging.info(f"Detected {len(bulk_peaks)} bulk peaks and {len(interface_peaks)} interface peaks")
+        
+        return results
+
+    def _identify_domain_boundaries(self, method="intensity_gradient", interface_width_px=5, min_bulk_size=50):
+        """
+        Identify domain boundaries and separate bulk from interface regions.
+        """
+        from scipy.ndimage import sobel, binary_erosion, binary_dilation, gaussian_filter
+        from skimage.morphology import remove_small_objects, label
+        from scipy.ndimage import laplace
+        
+        # Apply different boundary detection methods
+        if method == "intensity_gradient":
+            # Use gradient magnitude to identify boundaries
+            grad_x = sobel(gaussian_filter(self.image, 2), axis=1)
+            grad_y = sobel(gaussian_filter(self.image, 2), axis=0)
+            boundary_strength = np.sqrt(grad_x**2 + grad_y**2)
+            
+        elif method == "laplacian":
+            # Use Laplacian to identify rapid intensity changes
+            boundary_strength = np.abs(laplace(gaussian_filter(self.image, 1.5)))
+            
+        elif method == "sobel":
+            # Use Sobel operator for edge detection
+            boundary_strength = sobel(gaussian_filter(self.image, 2))
+            
+        else:
+            raise ValueError(f"Unknown boundary detection method: {method}")
+        
+        # Normalize boundary strength
+        boundary_strength = boundary_strength / boundary_strength.max()
+        
+        # Create boundary mask using adaptive threshold
+        boundary_threshold = np.percentile(boundary_strength, 85)  # Top 15% as boundaries
+        boundary_mask = boundary_strength > boundary_threshold
+        
+        # Dilate boundary mask to create interface regions
+        bulk_mask = binary_dilation(boundary_mask, iterations=interface_width_px)
+        
+        # Create bulk mask (everything that's not interface)
+        
+        # Remove small bulk regions
+        bulk_labeled = label(bulk_mask)
+        bulk_mask = remove_small_objects(bulk_labeled, min_size=min_bulk_size) > 0
+        
+        # Update interface mask to exclude removed bulk regions
+        interface_mask = ~bulk_mask
+        
+        return bulk_mask, interface_mask, boundary_strength
+        
+    def _detect_peaks_in_bulk_regions(self, bulk_mask, threshold_rel=0.3, sigma=3.0, min_distance=5):
+        """
+        Detect peaks specifically in bulk regions using standard parameters.
+        """
+        # Apply Gaussian filter optimized for bulk regions
+        filtered_image = gaussian_filter(self.image, sigma)
+        
+        # Mask the image to only include bulk regions
+        masked_image = filtered_image * bulk_mask
+        
+        # Detect peaks with standard sensitivity
+        peaks = peak_local_max(
+            masked_image,
+            min_distance=min_distance,
+            threshold_rel=threshold_rel,
+            exclude_border=True
+        )
+        
+        return peaks[:, [1, 0]].astype(float)  # Convert to (x, y) format
+        
+    def _detect_peaks_in_interface_regions(
+        self, 
+        interface_mask, 
+        threshold_rel=0.1, 
+        sigma=1.5, 
+        min_distance=3,
+        antiphase_detection=True,
+        boundary_strength=None
+    ):
+        """
+        Detect peaks in interface regions with specialized handling for antiphase boundaries.
+        """
+        from scipy.ndimage import maximum_filter, minimum_filter
+        
+        # Apply lighter Gaussian filter for interface regions
+        filtered_image = gaussian_filter(self.image, sigma)
+        
+        # Mask the image to only include interface regions
+        masked_image = filtered_image * interface_mask
+        
+        if antiphase_detection and boundary_strength is not None:
+            # Use more sophisticated detection for antiphase boundaries
+            peaks = self._detect_antiphase_peaks(
+                masked_image, boundary_strength, interface_mask,
+                threshold_rel, min_distance
+            )
+        else:
+            # Standard peak detection for interface regions
+            peaks = peak_local_max(
+                masked_image,
+                min_distance=min_distance,
+                threshold_rel=threshold_rel,
+                exclude_border=True
+            )
+            peaks = peaks[:, [1, 0]].astype(float)
+        
+        return peaks
+        
+    def _detect_antiphase_peaks(self, masked_image, boundary_strength, interface_mask, threshold_rel, min_distance):
+        """
+        Specialized peak detection for antiphase boundaries.
+        """
+        from scipy.ndimage import label, binary_erosion
+        
+        # Identify high-gradient regions (likely antiphase boundaries)
+        antiphase_mask = (boundary_strength > 0.7) & interface_mask
+        
+        # Use different detection strategies for antiphase vs regular interface
+        peaks_list = []
+        
+        # Regular interface peaks
+        regular_interface = interface_mask & (~antiphase_mask)
+        if regular_interface.any():
+            regular_peaks = peak_local_max(
+                masked_image * regular_interface,
+                min_distance=min_distance,
+                threshold_rel=threshold_rel,
+                exclude_border=True
+            )
+            if len(regular_peaks) > 0:
+                peaks_list.append(regular_peaks[:, [1, 0]].astype(float))
+        
+        # Antiphase boundary peaks with enhanced sensitivity
+        if antiphase_mask.any():
+            # Use lower threshold for antiphase boundaries
+            antiphase_peaks = peak_local_max(
+                masked_image * antiphase_mask,
+                min_distance=max(2, min_distance - 1),
+                threshold_rel=threshold_rel * 0.5,  # More sensitive
+                exclude_border=True
+            )
+            if len(antiphase_peaks) > 0:
+                peaks_list.append(antiphase_peaks[:, [1, 0]].astype(float))
+        
+        # Combine all peaks
+        if peaks_list:
+            all_peaks = np.vstack(peaks_list)
+        else:
+            all_peaks = np.array([]).reshape(0, 2)
+            
+        return all_peaks
+        
+    def _combine_and_classify_peaks(self, bulk_peaks, interface_peaks, bulk_mask, interface_mask):
+        """
+        Combine peaks from different regions and classify them.
+        """
+        peak_classifications = []
+        
+        # Add bulk peaks
+        all_peaks_list = []
+        if len(bulk_peaks) > 0:
+            all_peaks_list.append(bulk_peaks)
+            peak_classifications.extend(['bulk'] * len(bulk_peaks))
+        
+        # Add interface peaks
+        if len(interface_peaks) > 0:
+            all_peaks_list.append(interface_peaks)
+            peak_classifications.extend(['interface'] * len(interface_peaks))
+        
+        if all_peaks_list:
+            all_peaks = np.vstack(all_peaks_list)
+            peak_classifications = np.array(peak_classifications)
+        else:
+            all_peaks = np.array([]).reshape(0, 2)
+            peak_classifications = np.array([])
+        
+        # Remove duplicate peaks that might be close to boundaries
+        if len(all_peaks) > 0:
+            all_peaks, unique_indices = remove_close_coordinates(all_peaks, threshold=3)
+            peak_classifications = peak_classifications[unique_indices]
+        
+        return all_peaks, peak_classifications
+        
+    def _plot_domain_analysis(
+        self, bulk_mask, interface_mask, boundary_strength,
+        bulk_peaks, interface_peaks, peak_classifications
+    ):
+        """
+        Plot the domain analysis results.
+        """
+        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+        
+        # Original image
+        axes[0, 0].imshow(self.image, cmap='gray')
+        axes[0, 0].set_title('Original Image')
+        axes[0, 0].axis('off')
+        
+        # Boundary strength
+        im1 = axes[0, 1].imshow(boundary_strength, cmap='viridis')
+        axes[0, 1].set_title('Boundary Strength')
+        axes[0, 1].axis('off')
+        plt.colorbar(im1, ax=axes[0, 1], fraction=0.046, pad=0.04)
+        
+        # Domain separation
+        domain_map = bulk_mask.astype(int) + interface_mask.astype(int) * 2
+        im2 = axes[0, 2].imshow(domain_map, cmap='Set1')
+        axes[0, 2].set_title('Domain Separation\n(1=Bulk, 2=Interface)')
+        axes[0, 2].axis('off')
+        plt.colorbar(im2, ax=axes[0, 2], fraction=0.046, pad=0.04)
+        
+        # Bulk peaks
+        axes[1, 0].imshow(self.image, cmap='gray')
+        if len(bulk_peaks) > 0:
+            axes[1, 0].scatter(bulk_peaks[:, 0], bulk_peaks[:, 1], 
+                             c='red', s=10, marker='o', alpha=0.8)
+        axes[1, 0].set_title(f'Bulk Peaks ({len(bulk_peaks)})')
+        axes[1, 0].axis('off')
+        
+        # Interface peaks
+        axes[1, 1].imshow(self.image, cmap='gray')
+        if len(interface_peaks) > 0:
+            axes[1, 1].scatter(interface_peaks[:, 0], interface_peaks[:, 1], 
+                             c='blue', s=10, marker='s', alpha=0.8)
+        axes[1, 1].set_title(f'Interface Peaks ({len(interface_peaks)})')
+        axes[1, 1].axis('off')
+        
+        # Combined result
+        axes[1, 2].imshow(self.image, cmap='gray')
+        if len(bulk_peaks) > 0:
+            axes[1, 2].scatter(bulk_peaks[:, 0], bulk_peaks[:, 1], 
+                             c='red', s=8, marker='o', alpha=0.8, label='Bulk')
+        if len(interface_peaks) > 0:
+            axes[1, 2].scatter(interface_peaks[:, 0], interface_peaks[:, 1], 
+                             c='blue', s=8, marker='s', alpha=0.8, label='Interface')
+        axes[1, 2].set_title(f'All Peaks ({len(bulk_peaks) + len(interface_peaks)})')
+        axes[1, 2].legend()
+        axes[1, 2].axis('off')
+        
+        plt.tight_layout()
+        plt.show()
+
+    # find atomic columns  
     def import_coordinates(self, coordinates: np.ndarray):
         self.coordinates = coordinates[:, :2]
 
