@@ -1445,6 +1445,102 @@ class ImageFitting:
             return optimized_params
 
     def fit_positions_only(
+        self,
+        params: dict = None,
+        maxiter: int = 500,
+        tol: float = 1e-3,
+        step_size: float = 0.01,
+        local: bool = True,
+        verbose: bool = False,
+    ):
+        """
+        Fit only atomic positions while keeping other parameters (heights, widths, background) fixed.
+        
+        This method uses the existing optimization framework with parameter masking to freeze
+        non-position variables (height, width, background, ratio) while allowing only positions
+        (pos_x, pos_y) to vary during optimization.
+        
+        Args:
+            params: Initial parameters. If None, uses self.params or initializes new ones.
+            maxiter: Maximum iterations for position optimization.
+            tol: Tolerance for convergence.
+            step_size: Learning rate for optimizer.
+            local: Whether to use local calculation for prediction.
+            verbose: Whether to print optimization progress.
+            
+        Returns:
+            dict: Optimized parameters with refined positions and fixed other variables.
+        """
+        if params is None:
+            params = self.params if self.params is not None else self.init_params()
+        
+        logging.info("Fitting positions only (keeping heights, widths, background fixed)...")
+        
+        # Step 1: Linear estimation for initial heights
+        logging.info("Step 1: Linear estimation for initial heights...")
+        params = self.linear_estimator(params)
+        
+        # Step 2: Create a positions-only model by selectively freezing parameters
+        logging.info("Step 2: Optimizing positions only...")
+        positions_model = self._create_positions_only_model(params)
+        
+        # Step 3: Optimize positions while keeping other parameters fixed
+        optimized_params = self.optimize(
+            model=positions_model,
+            image_tensor=self.image_tensor,
+            params=params,
+            maxiter=maxiter,
+            tol=tol,
+            step_size=step_size,
+            verbose=verbose,
+        )
+        
+        # Restore fixed parameters from original
+        for key in ['height', 'width', 'background']:
+            if key in params:
+                optimized_params[key] = params[key]
+        if 'ratio' in params:
+            optimized_params['ratio'] = params['ratio']
+        
+        self.params = optimized_params
+        self.prediction = safe_convert_to_numpy(self.predict(optimized_params, local=local))
+        
+        logging.info("Positions-only fitting completed.")
+        return optimized_params
+
+    def _create_positions_only_model(self, params: dict):
+        """
+        Create a model instance that only allows position parameters to be trainable.
+        
+        Args:
+            params: Parameters dictionary with fixed values for non-position variables.
+            
+        Returns:
+            ImageModel: Model with frozen non-position parameters.
+        """
+        positions_model = self._create_fitting_model(params)
+        
+        # Set parameters and build model
+        positions_model.set_params(params)
+        if not positions_model.built:
+            positions_model.build()
+        
+        # Freeze non-position parameters by setting them as non-trainable
+        non_position_weights = ['height', 'width']
+        if hasattr(positions_model, 'ratio'):
+            non_position_weights.append('ratio')
+        
+        # Only freeze background if fit_background is True
+        if self.fit_background:
+            non_position_weights.append('background')
+        
+        for weight_name in non_position_weights:
+            if hasattr(positions_model, weight_name):
+                weight = getattr(positions_model, weight_name)
+                weight.trainable = False
+        
+        return positions_model
+
     def fit_global(
         self,
         params: dict = None,  # type: ignore
