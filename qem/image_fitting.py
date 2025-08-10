@@ -1454,11 +1454,13 @@ class ImageFitting:
         verbose: bool = False,
     ):
         if params is None:
-            # if self.params not empty
-            
             params = self.params if self.params is not None else self.init_params()
+        
+        # Create model with appropriate parameter trainability
+        fitting_model = self._create_fitting_model(params)
+        
         params = self.optimize(
-            model = self.model,
+            model=fitting_model,
             image_tensor=self.image_tensor,
             params=params,
             maxiter=maxiter,
