@@ -1239,7 +1239,7 @@ class ImageFitting:
         # Original Image with selected atoms
         axes[0].imshow(self.image, cmap="gray")
         axes[0].set_title("Original + Selected Atoms")
-        axes[0].scatter(params["pos_x"][index], params["pos_y"][index], color="r", s=5)
+        axes[0].scatter(safe_convert_to_numpy(params["pos_x"][index]), safe_convert_to_numpy(params["pos_y"][index]), color="r", s=5)
         axes[0].set_aspect("equal")
 
         # Full Prediction
