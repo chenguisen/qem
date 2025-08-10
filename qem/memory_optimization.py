@@ -135,7 +135,7 @@ class MemoryMonitor:
         
         memory_info = self.get_memory_info()
         if memory_info['rss_mb'] > 0:
-            self.logger.logger.info(
+            self.logger.info(
                 f"{operation}: Memory usage - RSS: {memory_info['rss_mb']:.1f} MB, "
                 f"VMS: {memory_info['vms_mb']:.1f} MB"
             )
@@ -178,7 +178,7 @@ class MemoryMonitor:
             final_memory = self.get_memory_info()
             if self.enable_logging and self.initial_memory['rss_mb'] > 0:
                 delta_rss = final_memory['rss_mb'] - self.initial_memory['rss_mb']
-                self.logger.logger.info(f"Completed {operation}: Memory delta: {delta_rss:+.1f} MB")
+                self.logger.info(f"Completed {operation}: Memory delta: {delta_rss:+.1f} MB")
 
 
 class BatchMemoryOptimizer:
