@@ -524,7 +524,7 @@ class GaussianMixtureModel:
 
     def plot_thickness(self, n_component, show_component=None):
         component_case = n_component - 1
-        self.component = self.result.idxComponentOfScs(component_case)
+        self.component = self.fit_result.idxComponentOfScs(component_case)
         plt.figure()
         plt.scatter(
             self._coordinates[0, :],
@@ -561,9 +561,9 @@ class GaussianMixtureModel:
         xaxis = self.n_component_list
         fig, ax = plt.subplots(1, 1)
         for cri in criteria:
-            plt.plot(xaxis, self.result.score[cri], label=cri)
+            plt.plot(xaxis, self.fit_result.score[cri], label=cri)
             plt.plot(
-                np.argmin(self.result.score[cri]) + 1, min(self.result.score[cri]), "o"
+                np.argmin(self.fit_result.score[cri]) + 1, min(self.fit_result.score[cri]), "o"
             )
         ax.legend(loc="upper center")
         plt.show(block=False)
@@ -587,16 +587,16 @@ class GaussianMixtureModel:
             plt.hist(self.val[0, :], bins=bin)
 
         if n_component is None:
-            min_icl_comp = np.argmin(self.result.score["icl"])
+            min_icl_comp = np.argmin(self.fit_result.score["icl"])
             logging.info(
                 f"Number of components is chosen to be {min_icl_comp+ 1} based on ICL.\n"
             )
             component_case = n_component - 1
         else:
             component_case = n_component - 1
-            weight = self.result.weight[component_case]
-            mean = self.result.mean[component_case]
-            width = self.result.width[component_case]
+            weight = self.fit_result.weight[component_case]
+            mean = self.fit_result.mean[component_case]
+            width = self.fit_result.width[component_case]
             if use_dim == 1:
                 plt.hist(self.val[:, self.channel], bins=bin)
                 for c in range(component_case):

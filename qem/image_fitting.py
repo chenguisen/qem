@@ -80,7 +80,7 @@ class ImageFitting:
         pbc: bool = False,
         fit_background: bool = True,
         gpu_memory_limit: bool = True,
-        enable_memory_monitoring: bool = True,
+        memory_monitoring: bool = True,
     ):
         """
         Initialize the ImageFitting class with comprehensive input validation.
@@ -132,11 +132,11 @@ class ImageFitting:
         self.pbc = pbc
         self.fit_background = fit_background
         self.gpu_memory_limit = gpu_memory_limit
-        self.enable_memory_monitoring = enable_memory_monitoring
+        self.memory_monitoring = memory_monitoring
         self.backend = keras.backend.backend()
         
         # Initialize memory monitoring
-        if self.enable_memory_monitoring:
+        if self.memory_monitoring:
             self.memory_monitor = MemoryMonitor()
             logging.info("Memory monitoring enabled")
         else:
