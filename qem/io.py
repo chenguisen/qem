@@ -45,6 +45,7 @@ def read_legacyInputStatSTEM(filename):
 def read_image(filename):
     """
     This function is used to read images in common image file formats like .tif, .png etc.
+    Also supports .mat files for legacy StatSTEM format.
 
     Parameters
     ----------
@@ -67,12 +68,32 @@ def read_image(filename):
     if not file_exists(filename):
         raise FileNotFoundError(f"{filename} not found")
 
-    im = Image.open(filename)
-    data = np.asarray(im)
-    if data.ndim == 3:
-        data = np.mean(data, axis=2)
-
-    return data
+    filename_str = str(filename)
+    
+    # Handle .mat files (legacy StatSTEM format)
+    if filename_str.endswith('.mat'):
+        try:
+            legacy_data = read_legacyInputStatSTEM(filename_str)
+            # Try to extract image from legacy format
+            if "input" in legacy_data and "obs" in legacy_data["input"]:
+                return legacy_data["input"]["obs"]
+            elif "obs" in legacy_data:
+                return legacy_data["obs"]
+            else:
+                raise ValueError("No image data found in .mat file")
+        except Exception as e:
+            # If legacy format fails, try standard image reading
+            pass
+    
+    # Handle standard image formats
+    try:
+        im = Image.open(filename)
+        data = np.asarray(im)
+        if data.ndim == 3:
+            data = np.mean(data, axis=2)
+        return data
+    except Exception as e:
+        raise ValueError(f"Could not read image from {filename}: {str(e)}")
 
 
 def read_delimited_text(filename, delimiter=None):
