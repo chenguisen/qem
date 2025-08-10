@@ -1106,6 +1106,7 @@ class ImageFitting:
             optimized_params = model.get_params()
             return optimized_params
 
+    def fit_positions_only(
     def fit_global(
         self,
         params: dict = None,  # type: ignore
