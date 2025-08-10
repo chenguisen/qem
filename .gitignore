@@ -2,6 +2,9 @@
 qem/__pycache__/
 tests/__pycache__/
 QEM.egg-info/
+__pycache__/
+dist/
+
 
 # environment
 .env
@@ -49,3 +52,4 @@ examples/CTO-SRO.ipynb
 
 # docs
 docs/build/
+build/

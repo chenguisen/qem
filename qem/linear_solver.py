@@ -304,9 +304,7 @@ class SolutionProcessor:
             
         Returns:
             Processed height scaling factors
-        """
-        original_scale = height_scale.copy()
-        
+        """        
         # Count out-of-bounds values for logging
         too_small = np.sum(height_scale < min_scale)
         too_large = np.sum(height_scale > max_scale)
