@@ -451,7 +451,7 @@ def safe_convert_to_numpy(tensor):
     if backend == "torch":
         # PyTorch backend requires detach().cpu().numpy()
         if hasattr(tensor, 'detach'):
-            return tensor.detach().cpu().numpy()
+            return tensor.cpu().detach().numpy()
         else:
             # Fallback to ops.convert_to_numpy for non-gradient tensors
             return ops.convert_to_numpy(tensor)
