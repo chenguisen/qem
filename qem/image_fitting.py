@@ -79,8 +79,7 @@ class ImageFitting:
         same_width: bool = True,
         pbc: bool = False,
         fit_background: bool = True,
-        gpu_memory_limit: bool = True,
-        memory_monitoring: bool = True,
+        monitor_memory: bool = False,
     ):
         """
         Initialize the ImageFitting class with comprehensive input validation.
@@ -94,7 +93,6 @@ class ImageFitting:
             same_width (bool, optional): Whether to use same width for all peaks. Defaults to True.
             pbc (bool, optional): Whether to use periodic boundary conditions. Defaults to False.
             fit_background (bool, optional): Whether to fit background. Defaults to True.
-            gpu_memory_limit (bool, optional): Whether to use memory-efficient GPU computation. Defaults to True.
             
         Raises:
             ValueError: If any input parameters are invalid.
@@ -117,7 +115,6 @@ class ImageFitting:
                 ("same_width", same_width),
                 ("pbc", pbc),
                 ("fit_background", fit_background),
-                ("gpu_memory_limit", gpu_memory_limit),
             ]:
                 if not isinstance(param_value, bool):
                     raise ValueError(f"{param_name} must be a boolean, got {type(param_value)}")
@@ -131,12 +128,11 @@ class ImageFitting:
         self.same_width = same_width
         self.pbc = pbc
         self.fit_background = fit_background
-        self.gpu_memory_limit = gpu_memory_limit
-        self.memory_monitoring = memory_monitoring
+        self.monitor_memory = monitor_memory
         self.backend = keras.backend.backend()
         
         # Initialize memory monitoring
-        if self.memory_monitoring:
+        if self.monitor_memory:
             self.memory_monitor = MemoryMonitor()
             logging.info("Memory monitoring enabled")
         else:
@@ -1567,7 +1563,7 @@ class ImageFitting:
                     break
         
         # --- 4. Finalization ---
-        self.params = self.linear_estimator(params)
+        # self.params = self.linear_estimator(params)
         self.prediction = safe_convert_to_numpy(self.predict(self.params))
         print("Stochastic fitting complete.")
         return self.params

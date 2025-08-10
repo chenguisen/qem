@@ -94,20 +94,24 @@ class Benchmark:
         batch_size=1000,
         verbose=False,
         plot=True,
+        fit_stochastic=True,
     ) -> None:
         model = ImageFitting(self.image, dx=self.dx)
         model.coordinates = self.input_coordinates / self.dx
         params = model.init_params(atom_size=atom_size, guess_radius=guess_radius)
-        params = model.fit_stochastic(
-            params,
-            tol=tol,
-            maxiter=maxiter,
-            step_size=step_size,
-            num_epoch=num_epoch,
-            batch_size=batch_size,
-            verbose=verbose,
-            plot=plot,
-        )
+        if fit_stochastic:
+            params = model.fit_stochastic(
+                params,
+                tol=tol,
+                maxiter=maxiter,
+                step_size=step_size,
+                num_epoch=num_epoch,
+                batch_size=batch_size,
+                verbose=verbose,
+                plot=plot,
+            )
+        else:
+            params = model.fit_global(params=params,maxiter=maxiter, tol=tol, step_size=step_size, verbose=verbose)
         self.qem = model
         self.model_qem = model.prediction
         self.scs_qem = model.volume
