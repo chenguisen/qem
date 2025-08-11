@@ -36,7 +36,7 @@ from qem.model import (
 )
 from qem.processing import butterworth_window
 from qem.refine import calculate_center_of_mass
-from qem.region import Regions
+from qem.region import Regions,Region
 from qem.utils import (
     get_random_indices_in_batches,
     remove_close_coordinates,
@@ -948,11 +948,13 @@ class ImageFitting:
             plt.pause(0.1)
 
         region_mask = atom_select.get_region_mask()
-        self.regions.region_map[region_mask] = region_index
-        try:
-            self.region_path_dict[region_index] = atom_select.path
-        except AttributeError:
-            pass
+        # self.regions.region_map[region_mask] = region_index
+        region = Region(
+            name=f"region_{region_index}",
+            index=region_index,
+            path=atom_select.path,
+            image_shape=self.image.shape)
+        self.regions.add_region(region)
         logging.info(
             f"Assigned label {region_index} with {region_mask.sum()} pixels to the region map."
         )
