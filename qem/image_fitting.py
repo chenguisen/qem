@@ -99,6 +99,7 @@ class ImageFitting:
         """
         # Validate all input parameters
         try:
+            image = gaussian_filter(image, 1.0)
             self.image = ImageFittingValidator.validate_image(image)
             self.dx = ImageFittingValidator.validate_dx(dx)
             self.elements = ImageFittingValidator.validate_elements(elements)
@@ -426,9 +427,16 @@ class ImageFitting:
         pos_x = np.clip(pos_x, 0, self.image.shape[0] - 1)
         pos_y = np.clip(pos_y, 0, self.image.shape[1] - 1)
 
-        # Initialize background
+        # Initialize background using robust estimation
         if self.fit_background:
-            init_background = self.image.min()
+            from qem.background_estimator import integrate_background_estimation
+            init_background = integrate_background_estimation(
+                self, 
+                background_method='combined',
+                mad={'percentile': 5.0},
+                kmeans={'n_clusters': 3},
+                edge={'edge_threshold': 0.1, 'low_intensity_ratio': 0.3}
+            )
         else:
             self.init_background = init_background
 
