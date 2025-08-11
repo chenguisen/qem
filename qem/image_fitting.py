@@ -455,22 +455,18 @@ class ImageFitting:
             "atom_types": self.atom_types
         }
 
-        if isinstance(self.model, VoigtModel):
+        if self.model_type == "voigt":
             if self.same_width:
                 ratio = np.tile(0.9, self.num_atom_types).astype(float)
             else:
                 ratio = np.tile(0.9, self.num_coordinates).astype(float)
-            params["ratio"] = ratio
+            params.update({"ratio": ratio})
 
         for key in params.keys():
             params[key] = keras.ops.convert_to_tensor(params[key], dtype="float32")
         
         self.params = params
-        self.model = self._create_model()
-        self.model.set_params(self.params)
-        # Build the model with the correct input shape (grid shapes)
-        if not self.model.built:
-            self.model.build()
+        self.model = self._create_fitting_model(self.params)
         return params
 
     def estimate_initial_peaks_for_complex_domains(
