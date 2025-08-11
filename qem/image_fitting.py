@@ -1595,7 +1595,10 @@ class ImageFitting:
 
         # Create and compile a single, reusable model for optimizing local batches.
         # This is the key performance improvement, as compilation happens only ONCE.
-        local_model_template = self._create_fitting_model(params)
+        atoms_selected_mask = np.zeros(self.num_coordinates, dtype=bool)
+        atoms_selected_mask[:batch_size] = True
+        select_params = self.select_params(params, atoms_selected_mask)
+        local_model_template = self._create_fitting_model(select_params)
         local_model_template.compile(
             optimizer=keras.optimizers.AdamW(learning_rate=step_size),
             loss=self.loss,
